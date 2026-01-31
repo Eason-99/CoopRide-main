@@ -15,47 +15,102 @@ import pickle
 import time
 import setproctitle
 from torch.utils.tensorboard import SummaryWriter
+sys.path.append('../z_wyc_add')
+from log import Logger
 
 os.environ["CUDA_VISIBLE_DEVICES"]='0'
 setproctitle.setproctitle("didi@wjw")
 
 
 def get_parameter():
+    """
+    参数配置函数：定义和管理所有训练/测试的参数
+    
+    Returns:
+        args: 包含所有配置参数的对象
+    
+    功能说明：
+        1. 使用 argparse 解析命令行参数
+        2. 设置训练和测试的各种超参数
+        3. 配置环境、算法、网络架构等参数
+        4. 自动生成日志目录和日志名称
+        5. 保存配置到 setting.txt 文件
+    """
+    # 创建参数解析器
     parser = argparse.ArgumentParser()
     args= parser.parse_args()
 
-    # parameter
+    # ========== 基础训练参数 ==========
+    # 最大迭代次数
     args.MAX_ITER=6000
 
-    # test 相关
-    args.test_dir = '../logs/synthetic/grid143/EnvStat326_OD143_FMRLmerge_Batch2000_Gamma0.97_Lambda0.95_Iter1_Ir0.001_Step144_Ent0.005_Minibatch5_Parallel5mix_MDP0_StateEmb2_Meta04_diffu1_DGCNC_relufeaNor3'
-    args.model_dir = '../logs/synthetic/grid143/EnvStat326_OD143_FMRLmerge_Batch2000_Gamma0.97_Lambda0.95_Iter1_Ir0.001_Step144_Ent0.005_Minibatch5_Parallel5mix_MDP0_StateEmb2_Meta04_diffu1_DGCNC_relufeaNor3/Best.pkl'
-    args.test = False
-    args.TEST_ITER=1
+    # ========== 测试相关参数 ==========
+    # 测试基准目录路径（公共前缀）
+    test_base_dir = '../logs/synthetic/grid143/EnvStat326_OD143_FMRLmerge_Batch2000_Gamma0.97_Lambda0.95_Iter1_Ir0.001_Step144_Ent0.005_Minibatch5_Parallel5mix_MDP0_StateEmb2_Meta04_diffu1_DGCNC_relufeaNor3'
+    
+    # 测试日志目录（仅用于查看）
+    args.test_dir = test_base_dir
+    
+    # 模型权重文件路径（用于加载测试模型）
+    args.model_dir = test_base_dir + '/Best.pkl'
+    
+    # 是否为测试模式（True=测试，False=训练）
+    # args.test = False
+    args.test = True
+    
+    # 测试迭代次数
+    args.TEST_ITER=3
+    
+    # 测试随机种子（保证测试可重复）
     args.TEST_SEED = 1314520
 
+    # 恢复训练的起始迭代（用于断点续训）
     args.resume_iter=0
+    
+    # 计算设备：'gpu' 或 'cpu'
     args.device='gpu'
-    args.neighbor_dispatch=False        # 是否考虑相邻网格接单
-    args.onoff_driver=False             # 不考虑车辆的随机下线
+    # 是否考虑相邻网格接单
+    args.neighbor_dispatch=False
+    
+    # 是否考虑车辆的随机下线
+    args.onoff_driver=False
+    
+    # 日志名称（注释掉的是历史日志名称）
     #args.log_name='M2_a0.01_reward2_t2_gamma0_value_noprice_noentropy'
     #args.log_name='advnormal_gradMean_iter10_lr3e-4_step144_clipno_batchall3_parallel1_minibatch1'
     args.log_name='debug'
 
-    # 环境相关
-    args.dispatch_interval= 10   # 决策间隔/min
+    # ========== 环境相关参数 ==========
+    # 决策间隔（分钟）：每隔多少分钟做一次调度决策
+    args.dispatch_interval= 10
+    
+    # 车辆速度（km/min），等于决策间隔
     args.speed=args.dispatch_interval
+    
+    # 等待时间（分钟），等于决策间隔
     args.wait_time=args.dispatch_interval
-    args.TIME_LEN = int(1440//args.dispatch_interval)   # 一天的总决策次数
-    args.grid_num= 143         # 网格数量，决定了数据集
+    
+    # 一天的总决策次数（1440分钟 / 决策间隔）
+    args.TIME_LEN = int(1440//args.dispatch_interval)
+    
+    # 网格数量（决定了使用哪个数据集）
+    # 可选值：36, 100, 121, 143
+    args.grid_num= 143
+    # 司机数量字典：不同网格规模对应不同的司机数量
     driver_dict = {
-        143:2000,
-        121:1500,
-        100:1000
+        143:2000,  # NYU143 数据集
+        121:1500,  # DiDi121 数据集
+        100:1000   # 合成数据
     }
-    args.driver_num=driver_dict[args.grid_num]        # 改变初始化司机数量
-    args.city_time_start=0      # 一天的开始时间，时间的总长度是TIME_LEN
+    args.driver_num=driver_dict[args.grid_num]
+    
+    # 城市开始时间（0 表示从一天开始）
+    args.city_time_start=0
+    
+    # 是否使用动态环境（False=静态环境，True=动态环境）
     args.dynamic_env = False
+    
+    # 环境随机种子字典：不同网格规模使用不同的固定种子
     seed_dict = {
         143:326,
         121:6,
@@ -63,182 +118,342 @@ def get_parameter():
     }
     args.env_seed = seed_dict[args.grid_num]
 
+    # ========== RL 算法参数 ==========
+    # 批次大小
     args.batch_size=int(1000)
+    
+    # Actor 网络学习率
     args.actor_lr=1e-3
+    
+    # Critic 网络学习率
     args.critic_lr=1e-3
+    
+    # Meta 网络学习率
     args.meta_lr = 1e-3
+    
+    # Actor 网络每次更新训练迭代次数
     args.train_actor_iters=1
+    
+    # Critic 网络每次更新训练迭代次数
     args.train_critic_iters=1
+    
+    # Meta 网络每次更新训练迭代次数
     args.train_phi_iters=1
+    
+    # 确保批次大小为整数
     args.batch_size= int(args.batch_size)
+    
+    # 折扣因子（gamma）：对未来奖励的折扣程度
     args.gamma=0.97
+    
+    # GAE lambda：控制优势估计的偏差-方差权衡
     args.lam=0.95
+    
+    # 梯度裁剪的最大范数（防止梯度爆炸）
     args.max_grad_norm = 10
+    
+    # PPO 裁剪比率（控制策略更新幅度）
     args.clip_ratio=0.2
+    
+    # 熵系数（鼓励探索）
     args.ent_factor=0.005
+    
+    # 是否对优势进行归一化
     args.adv_normal=True
+    
+    # 是否使用 PPO 裁剪
     args.clip=True
+    
+    # 每个 epoch 的步数（一天的时间步数）
     args.steps_per_epoch=144
-    args.grad_multi='mean'   # sum or mean
+    
+    # 梯度聚合方式：'mean' 或 'sum'
+    args.grad_multi='mean'
+    
+    # 小批次数量（每次更新时将数据分成多少个小批次）
     #args.minibatch_num= int(round(args.steps_per_epoch*args.grid_num/args.batch_size))
     args.minibatch_num=5
+    
+    # 并行回合数（并行训练的回合数）
     args.parallel_episode=5
-    args.parallel_way='mix'    # mix, mean
+    
+    # 并行方式：'mix'（混合）或 'mean'（平均）
+    args.parallel_way='mix'
+    
+    # 是否使用并行队列（True=先进先出，False=按顺序）
     args.parallel_queue=True
+    
+    # 是否使用返回值缩放
     args.return_scale=False
+    # ========== 网络架构参数 ==========
+    # 是否使用正交初始化（提高训练稳定性）
     args.use_orthogonal=True
+    
+    # 是否使用值裁剪（防止值函数过大）
     args.use_value_clip=True
+    
+    # 是否使用值归一化（RunningNorm）
     args.use_valuenorm=True
+    
+    # 是否使用 Huber 损失（对异常值不敏感）
     args.use_huberloss=False
+    
+    # 是否使用学习率退火
     args.use_lr_anneal=False
+    
+    # 是否使用 GAE（广义优势估计）
     args.use_GAEreturn=True
+    
+    # 是否使用 RNN（GRU）
     args.use_rnn=False
+    
+    # 是否使用 GAT（图注意力网络）
     args.use_GAT=False
+    
+    # 是否使用 GCN（图卷积网络）
     args.use_GCN=False
+    
+    # 是否使用 DGCN（深度图卷积网络）
     args.use_DGCN = True
+    
+    # 是否使用 Dropout
     args.use_dropout=False
+    
+    # 是否使用全局嵌入
     args.global_emb = False
+    
+    # ========== 辅助损失参数 ==========
+    # 是否使用辅助损失
     args.use_auxi = False
+    
+    # 辅助损失类型：'huber', 'mse', 'cos'
     args.auxi_loss = ['huber','mse','cos'] [1]
+    
+    # 辅助损失权重
     args.auxi_effi=0.01
+    
+    # 虚假订单辅助损失
     args.use_fake_auxi=0
+    
+    # 正则化类型：'None', 'L1', 'L2', 'L1state', 'L2state'
     args.use_regularize = ['None','L1','L2', 'L1state', 'L2state'] [0]
+    
+    # 正则化系数
     args.regularize_alpha = 1e-1
 
+    # 激活函数：'relu', 'tanh', 'sigmoid' 等
     args.activate_fun='relu'
     
-    args.use_neighbor_state = False     # 表示使用固定的多少阶邻居的信息作为状态
+    # ========== 邻域和中心化参数 ==========
+    # 是否使用邻居状态信息
+    args.use_neighbor_state = False
+    
+    # 邻接阶数（使用多少阶邻居）
     args.adj_rank = 3
-    args.merge_method = 'cat' # ['cat','res']
+    
+    # 特征合并方式：'cat'（拼接）或 'res'（残差）
+    args.merge_method = 'cat'
+    
+    # Actor 是否中心化（集中式训练）
     args.actor_centralize = True
+    
+    # Critic 是否中心化（集中式训练）
     args.critic_centralize = True
 
+    # ========== 奖励和匹配参数 ==========
+    # 奖励缩放因子
     args.reward_scale=5
+    
+    # 经验回放大小
     args.memory_size = int(args.TIME_LEN*args.parallel_episode)
+    
+    # 匹配模式：
+    # 'local': 本地匹配
+    # 'RLmerge': RL 合并匹配（车队可以调度）
+    # 'RLsplit': RL 分离匹配
     args.FM_mode = ['local','RLmerge','RLsplit' ][1]
+    
+    # 是否移除虚假订单
     args.remove_fake_order=False
+    
+    # 是否使用 ORR（订单响应率）奖励
     args.ORR_reward=False
+    
+    # ORR 奖励效率系数
     args.ORR_reward_effi=1
+    
+    # 是否只使用 ORR 奖励
     args.only_ORR=False
 
-    # 特征相关
-    args.feature_normal = 3 # 1和2是不同的归一化，3是加载历史的
-    args.use_state_diff = False  # 将前后两状态的差值作为状态补充
+    # ========== 特征相关参数 ==========
+    # 特征归一化方式：
+    # 1: 归一化到 [0,1]
+    # 2: 标准化
+    # 3: 加载历史归一化参数
+    args.feature_normal = 3
+    
+    # 是否使用状态差值作为状态补充
+    args.use_state_diff = False
+    
+    # 是否使用订单时间特征
     args.use_order_time = False
+    
+    # 是否使用新订单熵
     args.new_order_entropy=True
+    
+    # 是否使用订单网格
     args.order_grid=True
-    args.use_mdp = 0        # 0表示无，1表示表格，2表示deep
+    
+    # 是否使用 MDP（马尔可夫决策过程）：
+    # 0: 不使用
+    # 1: 表格 MDP
+    # 2: Deep MDP
+    args.use_mdp = 0
+    
+    # 是否更新值函数
     args.update_value=True
-    args.rm_state = []        # 在特征里去除 ['fea','time','id']
-    args.state_remove = ''    # 在网络里去除 AC0123
+    
+    # 在特征中去除的项：['fea', 'time', 'id']
+    args.rm_state = []
+    
+    # 在网络中去除的状态：AC0123
+    args.state_remove = ''
 
-    # 状态表征
+    # ========== 状态表征参数 ==========
+    # 状态嵌入选择：
+    # 0: 无嵌入
+    # 1: 简单嵌入
+    # 2: 复杂嵌入
     args.state_emb_choose = 2
 
-    # 控制Logs
+    # ========== 日志控制参数 ==========
+    # 是否记录特征
     args.log_feature = True
+    
+    # 是否记录分布
     args.log_distribution = False
+    
+    # 是否记录 phi（meta 参数）
     args.log_phi = False
 
-    # 控制合作
+    # ========== 合作机制参数（Meta-learning） ==========
     '''
-    meta_choose : 0
-        无meta 此时看team rank 和 global share
-    meta_choose : 1,2,3
-        都是圆环加权,1,2,3是不同的归一化方法
-    meta_choose : 4, 5
-        圆饼加权
-        4 是 0~K阶
-        5 是 1~K阶
-    meta_choose : 6,7
-        圆环和圆饼结合, 低阶圆饼, 高阶圆环
-        6 是 前1阶圆饼
-        7 是 前2阶圆饼
+    meta_choose 策略说明：
+        0: 无 meta（此时看 team_rank 和 global_share）
+        1, 2, 3: 圆环加权（不同归一化方法）
+        4, 5: 圆饼加权
+            - 4: 0~K 阶（包含当前节点）
+            - 5: 1~K 阶（不包含当前节点）
+        6, 7: 圆环和圆饼结合（低阶圆饼，高阶圆环）
+            - 6: 前 1 阶圆饼，其余圆环
+            - 7: 前 2 阶圆饼，其余圆环
     '''
-    # meta choose 0:无meta 此时看team rank 和 global share
+    # Meta 策略选择
     args.meta_choose =4
+    
+    # Meta 作用范围（最多考虑多少阶邻居）
     args.meta_scope = 4
+    
+    # 团队排名（用于计算 ORR 奖励时考虑的邻域范围）
     args.team_rank=0
+    
+    # 是否全局共享（True=所有智能体共享，False=不共享）
     args.global_share=False
 
+    # ========== 日志名称生成 ==========
+    # 构建日志名称字典（用于生成唯一的日志名称）
     log_name_dict={
-        'OD': args.grid_num,
-        'FM': args.FM_mode,
-        'Batch': args.batch_size,
-        #'Advnorm': '' if args.adv_normal else 'NO',
-        #'Grad': args.grad_multi,
-        'Gamma':args.gamma,
-        'Lambda':args.lam,
-        'Iter': args.train_actor_iters,
-        'Ir': args.actor_lr,
-        'Step': args.steps_per_epoch,
-        #'Clipnew': args.clip_ratio if args.clip else 'NO',
-        'Ent': args.ent_factor,
-        'Minibatch': args.minibatch_num,
-        'Parallel': str(args.parallel_episode)+args.parallel_way,
-        #'Rscale':args.reward_scale,
-        'MDP': str(args.use_mdp),
-        #'queue': '' if args.parallel_queue else 'NO',
-        #'TeamR': 'share' if args.full_share else args.team_reward_factor,
-        #'TeamRank': 'global' if args.global_share else args.team_rank,
-        #'ORR': args.ORR_reward_effi if args.ORR_reward else 'NO' ,
-        #'Actor': 'Cen' if args.actor_centralize else 'Decen',
-        #'Critic': 'Cen' if args.critic_centralize else 'Decen',
-        #'Auxi': args.auxi_loss+str(args.auxi_effi) if args.use_auxi else 'No',
-        #'FakeNewAuxi': args.use_fake_auxi
-        'StateEmb': str(args.state_emb_choose),
-        #'Meta': str(args.meta_choose)+'+'
+        'OD': args.grid_num,              # 网格数量
+        'FM': args.FM_mode,               # 匹配模式
+        'Batch': args.batch_size,         # 批次大小
+        'Gamma':args.gamma,                # 折扣因子
+        'Lambda':args.lam,                # GAE lambda
+        'Iter': args.train_actor_iters,   # 训练迭代次数
+        'Ir': args.actor_lr,              # Actor 学习率
+        'Step': args.steps_per_epoch,     # 每个 epoch 的步数
+        'Ent': args.ent_factor,           # 熵系数
+        'Minibatch': args.minibatch_num,   # 小批次数量
+        'Parallel': str(args.parallel_episode)+args.parallel_way,  # 并行设置
+        'MDP': str(args.use_mdp),         # MDP 设置
+        'StateEmb': str(args.state_emb_choose),  # 状态嵌入
     }
+    
+    # 开始构建日志名称
     args.log_name=''
+    
+    # 根据环境类型添加前缀
     if args.dynamic_env:
-        args.log_name+= 'EnvDyna_'
+        args.log_name+= 'EnvDyna_'      # 动态环境
     else:
-        args.log_name+= 'EnvStat{}_'.format(args.env_seed)
+        args.log_name+= 'EnvStat{}_'.format(args.env_seed)  # 静态环境（带种子）
+    
+    # 添加所有基础参数
     for k,v in log_name_dict.items():
         args.log_name+= k+str(v)+'_'
+    
+    # 添加 Meta 参数
     args.log_name+='Meta'+str(args.meta_choose)
     if args.meta_choose==0:
+        # 无 meta 的情况
         if args.global_share:
             args.log_name+='global'
         else:
             args.log_name+=str(args.team_rank)
     else:
+        # 有 meta 的情况
         args.log_name+=str(args.meta_scope)
         args.log_name+= '_LR'+str(args.meta_lr)
+    # 添加可选参数到日志名称
     #args.log_name+='seed0'
     #args.log_name+='_car50'
+    
+    # 是否移除网格
     if args.order_grid==False:
         args.log_name+='_RmGrid'
+    
+    # 是否只使用 ORR
     if args.only_ORR:
         args.log_name+='_onlyORR'
+    
+    # 是否更新值函数
     if args.update_value:
-        pass
+        pass  # 已默认包含，注释掉
         #args.log_name+='_UpVal'
+    
+    # 是否移除状态
     if args.state_remove != '':
         args.log_name += '_StateRm'+args.state_remove
+    
+    # 是否使用新订单熵
     #args.log_name+='_KLNEW'
     if args.new_order_entropy:
+        pass  # 已默认包含，注释掉
         #args.log_name+='_NewEntropy'
-        pass
+    
+    # 是否使用状态差值
     if args.use_state_diff :
         args.log_name+='_StateDiff'
+    
+    # 网络架构相关
     if args.use_orthogonal==True:
-        pass
+        pass  # 已默认包含，注释掉
         #args.log_name+='_OrthoInit'
     if args.use_value_clip:
-        pass
+        pass  # 已默认包含，注释掉
         #args.log_name+='_ValueClip'
     if args.use_valuenorm:
-        pass
+        pass  # 已默认包含，注释掉
         #args.log_name+='_ValueNorm'
     if args.use_huberloss:
-        pass
+        pass  # 已默认包含，注释掉
         #args.log_name+='_Huberloss'
     if args.use_lr_anneal:
         args.log_name+='_LRAnneal'
     if args.use_GAEreturn:
-        pass
+        pass  # 已默认包含，注释掉
         #args.log_name+='_GAEreturn'
+    
+    # RNN 和图神经网络
     if args.use_rnn:
         args.log_name+='_GRU2'
     if args.use_GAT:
@@ -248,42 +463,64 @@ def get_parameter():
     if args.use_DGCN:
         args.log_name+='_DGCN'
         if args.actor_centralize:
-            args.log_name+='A'
+            args.log_name+='A'  # Actor 中心化
         if args.critic_centralize:
-            args.log_name+='C'
+            args.log_name+='C'  # Critic 中心化
+    
+    # 邻居状态
     if args.use_neighbor_state:
         args.log_name+='_Statenew'+str(args.adj_rank)
+    
+    # 正则化和辅助损失
     if args.use_regularize != 'None':
         args.log_name+='_'+args.use_regularize+str(args.regularize_alpha)
     if args.use_auxi:
         args.log_name+= 'Auxi'+args.auxi_loss+str(args.auxi_effi)
     if args.use_fake_auxi >0:
         args.log_name+= 'FakeNewAuxi'+str(args.use_fake_auxi)
+    
+    # 激活函数和特征归一化
     args.log_name+= '_'+args.activate_fun
     args.log_name+= 'feaNor'+str(args.feature_normal)
+    
+    # 移除的特征
     if len(args.rm_state)>0:
         args.log_name+='_RM'
         for s in args.rm_state:
             args.log_name+=s
         
 
+    # ========== 日志目录创建 ==========
+    # 添加合并方法（已注释）
     #args.log_name+= '_'+args.merge_method
     #args.log_name+='_GAE'
 
+    # 历史日志名称（已注释）
     #args.log_name='advnormal_gradMean_iter10_lr3e-4_step144_clipno_batchall3_parallel1_minibatch1'
     #args.log_name='debug'
 
+    # 获取当前时间
     current_time = time.strftime("%Y%m%d_%H-%M")
-    #log_dir = '../logs/' + "{}".format(current_time)
-    log_dir = '../logs/' + 'synthetic/'+'grid'+str(args.grid_num)+'/'+args.log_name
+    
+    # 构建日志目录路径
+    #log_dir = '../logs/' + "{}".format(current_time)  # 使用时间戳
+    log_dir = '../logs/' + 'synthetic/'+'grid'+str(args.grid_num)+'/'+args.log_name  # 使用参数名称
+    
+    # 如果目录已存在，添加时间戳后缀
     if os.path.exists(log_dir):
         log_dir+='_'+current_time
+    
+    # 保存日志目录路径
     args.log_dir=log_dir
+    
+    # 创建日志目录（包括所有父目录）
     mkdir_p(log_dir)
     print ("log dir is {}".format(log_dir))
     
+    # ========== 保存配置参数 ==========
     args.writer_logs=True
     if args.writer_logs:
+        # 将所有参数保存到 setting.txt 文件
         args_dict=args.__dict__
         with open(log_dir+'/setting.txt','w') as f:
             for key, value in args_dict.items():
@@ -480,82 +717,225 @@ def train(env, agent , writer=None,args=None,device='cpu'):
         #writer.add_scalar('train Suply/demand',np.mean(entropy),iteration)
 
 
+def log_test_info(args):
+    """
+    打印测试执行的关键信息
+    
+    Args:
+        args: 配置参数对象
+    
+    功能说明：
+        调用 log 模块记录测试的关键配置信息，包括执行模式、网格参数、
+        迭代次数、是否使用 meta、是否使用 MDP 等
+    """
+    Logger.info("=" * 60)  # 分隔线
+    Logger.info("TEST EXECUTION INFO")  # 测试信息标题
+    Logger.info("=" * 60)  # 分隔线
+    
+    # 执行模式
+    mode = "TEST" if args.test else "TRAIN"
+    Logger.info(f"Execution Mode: {mode}")  # 当前执行模式：TEST为测试模式，TRAIN为训练模式
+    
+    # 网格参数
+    Logger.info(f"Grid Number: {args.grid_num}")  # 网格数量，决定了使用哪个数据集，可选值：36, 100, 121, 143
+    Logger.info(f"Driver Number: {args.driver_num}")  # 司机数量，不同网格规模对应不同司机数（143网格对应2000，121对应1500，100对应1000）
+    Logger.info(f"Grid Layout: {args.M} x {args.N}")  # 网格布局的行列尺寸
+    Logger.info(f"Environment Type: {'Dynamic' if args.dynamic_env else 'Static'}")  # 环境类型，Static为静态环境（固定场景），Dynamic为动态环境（场景变化）
+    if not args.dynamic_env:
+        Logger.info(f"Environment Seed: {args.env_seed}")  # 静态环境的随机种子，用于保证场景可重现（不同网格使用不同固定种子）
+    
+    # 测试相关参数
+    Logger.info(f"Test Iterations: {args.TEST_ITER}")  # 测试迭代次数，决定运行多少个测试回合
+    Logger.info(f"Test Seed: {args.TEST_SEED}")  # 测试随机种子，用于保证测试结果可重复
+    Logger.info(f"Model Path: {args.model_dir}")  # 预训练模型权重文件的路径
+    
+    # 时间相关参数
+    Logger.info(f"Dispatch Interval: {args.dispatch_interval} min")  # 调度决策间隔时间（分钟），每隔多少分钟做一次车辆调度决策
+    Logger.info(f"Time Steps per Day: {args.TIME_LEN}")  # 一天的总时间步数（1440分钟除以决策间隔）
+    
+    # Meta 参数（合作机制参数）
+    has_meta = args.meta_choose > 0
+    Logger.info(f"Meta Learning: {'Enabled' if has_meta else 'Disabled'}")  # 元学习是否启用，用于实现多智能体合作机制
+    if has_meta:
+        Logger.info(f"Meta Strategy: {args.meta_choose}")  # 元学习策略类型，0=无meta，1-3=圆环加权，4-5=圆饼加权，6-7=混合策略
+        Logger.info(f"Meta Scope: {args.meta_scope}")  # 元学习作用范围，最多考虑多少阶邻居进行合作
+    else:
+        Logger.info(f"Team Rank: {args.team_rank}")  # 团队排名，用于计算ORR奖励时考虑的邻域范围（当不使用meta时生效）
+        Logger.info(f"Global Share: {args.global_share}")  # 是否全局共享参数（当不使用meta时生效）
+    
+    # MDP 参数（马尔可夫决策过程参数）
+    if args.use_mdp == 0:
+        Logger.info(f"MDP: Disabled")  # 不使用MDP辅助值函数估计
+    elif args.use_mdp == 1:
+        Logger.info(f"MDP: Tabular MDP")  # 使用表格型MDP，基于Q表进行值函数估计
+    elif args.use_mdp == 2:
+        Logger.info(f"MDP: Deep MDP")  # 使用深度MDP，基于神经网络进行值函数估计
+    
+    # 网络架构参数
+    Logger.info(f"State Embedding: {args.state_emb_choose}")  # 状态嵌入类型，0=无嵌入，1=简单嵌入，2=复杂嵌入
+    Logger.info(f"Use RNN: {args.use_rnn}")  # 是否使用循环神经网络（GRU）处理序列状态
+    Logger.info(f"Use GAT: {args.use_GAT}")  # 是否使用图注意力网络捕获节点间关系
+    Logger.info(f"Use GCN: {args.use_GCN}")  # 是否使用图卷积网络进行特征提取
+    Logger.info(f"Use DGCN: {args.use_DGCN}")  # 是否使用深度图卷积网络进行多层特征提取
+    Logger.info(f"Actor Centralized: {args.actor_centralize}")  # Actor网络是否中心化，集中式训练时使用全局信息
+    Logger.info(f"Critic Centralized: {args.critic_centralize}")  # Critic网络是否中心化，集中式训练时使用全局信息
+    
+    # 匹配模式参数
+    Logger.info(f"Fleet Matching Mode: {args.FM_mode}")  # 车队匹配模式，local=本地匹配，RLmerge=RL合并匹配（可车队调度），RLsplit=RL分离匹配
+    
+    # 计算设备
+    Logger.info(f"Device: {args.device.upper()}")  # 计算设备，GPU使用CUDA加速，CPU使用普通计算
+    
+    # 日志信息
+    Logger.info(f"Log Directory: {args.log_dir}")  # 日志文件保存目录
+    
+    Logger.info("=" * 60)  # 分隔线
+    Logger.info("TEST STARTED")  # 测试开始提示
+    Logger.info("=" * 60)  # 分隔线
+
+
 def test(env, agent , writer=None,args=None,device='cpu'):
+    """
+    测试函数：在测试模式下评估模型性能
+    
+    Args:
+        env: 环境对象
+        agent: MAPPO 智能体
+        writer: TensorBoard writer (可选)
+        args: 配置参数
+        device: 计算设备 ('cpu' 或 'cuda')
+    
+    Returns:
+        无直接返回值，但会打印测试结果并保存日志
+    
+    功能说明：
+        1. 使用固定随机种子保证测试可重复性
+        2. 不进行模型参数更新
+        3. 评估模型在多个回合中的表现
+        4. 记录关键指标（GMV, ORR, KL, Entropy等）
+    """
+    # 设置固定随机种子，确保测试结果可重复
     np.random.seed(args.TEST_SEED)
+    
+    # 初始化最佳性能指标
     best_gmv=0
     best_orr=0
+    
+    # 外层循环：测试迭代次数
     for iteration in np.arange(args.TEST_SEED, args.TEST_SEED+args.TEST_ITER):
+        # 记录测试开始时间
         t_begin=time.time()
         print('\n---- ROUND: #{} ----'.format(iteration))
+        
+        # 计算随机种子（每次迭代使用不同种子）
         RANDOM_SEED = iteration*1000
+        
+        # 根据环境类型重置随机种子
         if args.dynamic_env:
-            env.reset_randomseed(RANDOM_SEED)
+            env.reset_randomseed(RANDOM_SEED)  # 动态环境使用计算出的随机种子
         else:
-            env.reset_randomseed(args.env_seed*1000)
+            env.reset_randomseed(args.env_seed*1000)  # 静态环境使用固定环境种子
 
-        gmv = []
-        fake_orr = []
-        fleet_orr = []
-        kl = []
-        entropy = []
-        order_response_rates = []
-        T = 0
+        # 初始化指标列表
+        gmv = []                    # 总订单价值
+        fake_orr = []               # 虚假订单响应率
+        fleet_orr = []              # 车队订单响应率
+        kl = []                     # KL散度
+        entropy = []                # 供给/需求熵
+        order_response_rates = []   # 订单响应率
+        T = 0                       # 当前时间步
 
+        # 环境重置，获取初始状态
         states_node, _, order_states, order_idx, order_feature, global_order_states = env.reset(mode='PPO2')
-        state=agent.process_state(states_node,T)  # state dim= (grid_num, 119)
+        
+        # 处理初始状态，state维度为 (grid_num, 119)
+        state=agent.process_state(states_node,T)
+        
+        # 初始化 RNN 隐藏状态（用于 Actor）
         state_rnn_actor = torch.zeros((1,agent.agent_num,agent.hidden_dim),dtype=torch.float)
+        
+        # 初始化 RNN 隐藏状态（用于 Critic）
         state_rnn_critic = torch.zeros((1,agent.agent_num,agent.hidden_dim),dtype=torch.float)
+        
+        # 处理订单状态
         order,mask_order=agent.process_order(order_states,T)
+        
+        # 移除订单网格信息
         order=agent.remove_order_grid(order)
+        
+        # 屏蔽虚假订单
         mask_order= agent.mask_fake(order, mask_order)
 
 
+        # 内层循环：一天的时间步
         for T in np.arange(args.TIME_LEN):
+            # 断言检查维度一致性
             assert len(order_idx)==args.grid_num ,'dim error'
             assert len(order_states)==args.grid_num ,'dim error'
             for i in range(len(order_idx)):
                 assert len(order_idx[i])==len(order_states[i]), 'dim error'
 
             #t0=time.time()
+            # Agent 采样动作
+            # 参数说明：
+            #   - sample=True: 使用采样而非确定性动作
+            #   - random_action=False: 不使用随机动作
+            #   - FM_mode: 匹配模式（local/RLmerge/RLsplit）
             action, local_value, global_value ,logp, mask_agent, mask_order_multi, mask_action ,  mask_entropy ,next_state_rnn_actor, next_state_rnn_critic ,action_ids, selected_ids = agent.action(state,order,state_rnn_actor, state_rnn_critic,mask_order,order_idx ,device,sample=True,random_action=False, FM_mode = args.FM_mode)
             
             #t1=time.time()
+            # 根据动作 ID 获取订单
             orders = env.get_orders_by_id(action_ids)
 
+            # 执行环境步，生成订单并更新环境状态
             next_states_node,  next_order_states, next_order_idx, next_order_feature= env.step(orders, generate_order=1, mode='PPO2')
 
             #t2=time.time()
 
-            # distribution should gotten after step
-            dist = env.step_get_distribution()
-            entr_value = env.step_get_entropy()
-            order_dist, driver_dist = dist[:, 0], dist[:, 1]
+            # 获取分布和熵信息（必须在 step 之后调用）
+            dist = env.step_get_distribution()              # 获取订单和司机的分布
+            entr_value = env.step_get_entropy()             # 获取熵值
+            order_dist, driver_dist = dist[:, 0], dist[:, 1]  # 分离订单分布和司机分布
+            
+            # 计算 KL 散度：衡量订单分布与司机分布的差异
             kl_value = np.sum(order_dist * np.log(order_dist / driver_dist))
+            
+            # 记录指标
             entropy.append(entr_value)
             kl.append(kl_value)
-            gmv.append(env.gmv)
-            fake_orr.append(env.fake_response_rate)
-            fleet_orr.append(env.fleet_response_rate)
+            gmv.append(env.gmv)                          # 记录总订单价值
+            fake_orr.append(env.fake_response_rate)      # 记录虚假订单响应率
+            fleet_orr.append(env.fleet_response_rate)    # 记录车队响应率
             if env.order_response_rate >= 0:
-                order_response_rates.append(env.order_response_rate)
+                order_response_rates.append(env.order_response_rate)  # 记录订单响应率
 
-            # store transition
+            # 判断回合是否结束
             if T==args.TIME_LEN-1:
                 done=True
             else:
                 done=False
 
+            # 计算基础奖励（基于 GMV）
             reward = torch.Tensor([ node.gmv for node in env.nodes] ) 
+            
+            # 获取空闲司机数和真实订单数
             driver_num= torch.Tensor([node.idle_driver_num for node in env.nodes])
             order_num= torch.Tensor([node.real_order_num for node in env.nodes])
+            
+            # 记录分布日志
             agent.logs.push_log_distribution(T,reward, driver_num,order_num)
 
+            # 如果启用 ORR（订单响应率）奖励
             if args.ORR_reward==True:
                 ORR_reward=torch.zeros_like(reward)
                 driver_num= torch.Tensor([node.idle_driver_num for node in env.nodes])+1e-5
                 order_num= torch.Tensor([node.real_order_num for node in env.nodes])+1e-5
                 driver_order=torch.stack([driver_num,order_num],dim=1)
+                
+                # 计算 ORR 熵：衡量供需平衡程度
+                # 使用 min(driver, order) / max(driver, order) 作为熵指标
                 ORR_entropy= torch.min(driver_order,dim=1)[0]/torch.max(driver_order,dim=1)[0]
+                
                 '''
                 ORR_entropy= ORR_entropy*torch.log(ORR_entropy)
 
@@ -566,6 +946,8 @@ def test(env, agent , writer=None,args=None,device='cpu'):
                 driver_num/=torch.sum(driver_num)
                 ORR_KL = torch.sum(order_num * torch.log(order_num / driver_num))
                 '''
+                
+                # 考虑邻域的 ORR（如果设置了 team_rank）
                 for i in range(args.grid_num):
                     num=1
                     ORR_reward[i]=ORR_entropy[i]
@@ -575,24 +957,33 @@ def test(env, agent , writer=None,args=None,device='cpu'):
                         ORR_reward[i]+= torch.sum(ORR_entropy[neighb])
                     ORR_reward[i]/=num
                 #ORR_reward= -ORR_reward*10-ORR_KL+2.5
+                
+                # 将 ORR 奖励加到基础奖励上
                 reward+= ORR_reward*args.ORR_reward_effi
+                
+                # 如果只使用 ORR 奖励
                 if args.only_ORR:
                     reward= ORR_reward*args.ORR_reward_effi
 
 
 
             #print(0)
+            # 奖励归一化/缩放
             if args.return_scale:
                 reward/=record_return
             else:
                 reward/=args.reward_scale
 
+            # 处理下一状态
             next_state=agent.process_state(next_states_node,T+1)  # state dim= (grid_num, 119)
+            
+            # 处理下一订单状态
             next_order,next_order_mask=agent.process_order(next_order_states, T+1)
             next_order=agent.remove_order_grid(next_order)
             next_order_mask= agent.mask_fake(next_order, next_order_mask)
 
             '''
+            # 注释掉的代码：测试模式不存储转换到 buffer
             agent.buffer.push(state, next_state ,order, action, reward[:,None], local_value, global_value ,logp , mask_order_multi, mask_action, mask_agent, mask_entropy ,state_rnn_actor.squeeze(0), state_rnn_critic.squeeze(0))
 
             epoch_ended = (T%args.steps_per_epoch)== (args.steps_per_epoch-1)
@@ -617,6 +1008,7 @@ def test(env, agent , writer=None,args=None,device='cpu'):
             #t3=time.time()
             #print(t1-t0,t2-t0,t3-t0)
 
+            # 更新状态变量为下一状态
             states_node=next_states_node
             order_idx=next_order_idx
             order_states=next_order_states
@@ -629,6 +1021,7 @@ def test(env, agent , writer=None,args=None,device='cpu'):
             T += 1
 
         '''
+        # 注释掉的代码：测试模式不进行模型更新
         if args.log_feature:
             agent.logs.save_feature()
 
@@ -644,15 +1037,24 @@ def test(env, agent , writer=None,args=None,device='cpu'):
             writer.add_scalar('train mdp value',agent.MDP.update(device),iteration) 
         '''
 
+        # 记录测试结束时间
         t_end=time.time()
 
+        # 更新最佳性能指标
         if np.sum(gmv)> best_gmv:
             best_gmv=np.sum(gmv)
             best_orr=order_response_rates[-1]
+        
+        # 打印测试结果
         print('>>> Time: [{0:<.4f}] Mean_ORR: [{1:<.4f}] GMV: [{2:<.4f}] Best_ORR: [{3:<.4f}] Best_GMV: [{4:<.4f}]'.format(
             t_end-t_begin,order_response_rates[-1], np.sum(gmv),best_orr,best_gmv ))
+        
         #agent.save_param(args.log_dir,'param')
+        
+        # 保存分布日志
         agent.logs.save_log_distribution('distribution')
+        
+        # 注释掉的代码：测试模式不记录 TensorBoard 指标
         #writer.add_scalar('train ORR',order_response_rates[-1],iteration)
         #writer.add_scalar('train GMV',np.sum(gmv),iteration)
         #writer.add_scalar('train KL',np.mean(kl),iteration)
@@ -660,52 +1062,88 @@ def test(env, agent , writer=None,args=None,device='cpu'):
 
 
 if __name__ == "__main__":
+    """
+    主函数入口：程序的执行起点
+    
+    功能流程：
+        1. 获取配置参数
+        2. 设置计算设备（GPU/CPU）
+        3. 创建环境（根据 grid_num 选择不同的数据集）
+        4. 初始化 TensorBoard writer
+        5. 初始化 MAPPO Agent
+        6. 根据 test 参数选择训练或测试模式
+    """
+    # ========== 步骤 1: 获取配置参数 ==========
     args=get_parameter()
 
+    # ========== 步骤 2: 设置计算设备 ==========
     if args.device=='gpu':
         device=torch.device('cuda')
     else:
         device=torch.device('cpu')
 
+    # ========== 步骤 3: 创建环境 ==========
     '''
+    注释掉的代码：真实环境创建方式
     dataset=kdd18(args)
     dataset.build_dataset(args)
     env=CityReal(dataset=dataset,args=args)
     '''
+    
+    # 根据 grid_num 选择不同的环境创建函数
     if args.grid_num==100:
+        # 创建 100 网格的合成环境
         env, args.M, args.N, _, args.grid_num=create_OD()
     elif args.grid_num==36:
+        # 创建 36 网格的合成环境
         env, args.M, args.N, _, args.grid_num=create_OD_36()
     elif args.grid_num == 121:
+        # 加载 DiDi 121 网格的真实环境
         env, M, N, _, args.grid_num=load_envs_DiDi121(driver_num=args.driver_num)
     elif args.grid_num == 143:
+        # 加载 NYU 143 网格的真实环境
         env, M, N, _, args.grid_num=load_envs_NYU143(driver_num=args.driver_num)
     
+    # 设置车队帮助模式（如果匹配模式不是 local，则启用车队调度）
     env.fleet_help= args.FM_mode != 'local'
 
+    # ========== 步骤 4: 初始化 TensorBoard writer ==========
     if args.writer_logs:
         writer=SummaryWriter(args.log_dir)
     else:
         writer=None
 
+    # ========== 步骤 5: 初始化 MAPPO Agent ==========
     agent=PPO(env,args,device)
 
+    # 注释掉的代码：MDP 相关
     #MDP=MdpAgent(args.TIME_LEN,args.grid_num,args.gamma)
     #if args.order_value:
         #MDP.load_param('../logs/synthetic/MDP/OD+localFM/MDPsave.pkl')
                         #logs/synthetic/MDP/OD+randomFM/MDP.pkl
     #agent.MDP=MDP
     #agent=None
+    
+    # 将模型移动到指定设备
     agent.move_device(device)
     
+    # ========== 步骤 6: 选择训练或测试模式 ==========
     if args.test:
+        # 测试模式
         logs = logfile.logs(args.log_dir, args)
         agent.logs = logs
+        # 打印测试配置信息
+        log_test_info(args)
+        # 加载预训练模型
         agent.load_param(args.model_dir)
+        # 运行测试
         test(env,agent,writer=writer, args=args,device=device)
     else:
+        # 训练模式
         logs = logfile.logs(args.log_dir, args)
         agent.logs = logs
+        # 运行训练
         train(env,agent,writer=writer,args=args,device=device)
 
+    # 注释掉的代码：设置 agent 的步数（用于恢复训练）
     #agent.step=args.resume_iter
