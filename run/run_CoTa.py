@@ -22,6 +22,51 @@ os.environ["CUDA_VISIBLE_DEVICES"]='0'
 setproctitle.setproctitle("didi@wjw")
 
 
+def count_action_orders_and_drivers(orders, env):
+    """
+    统计 action 中各类订单的数量（各个节点之和）和空闲司机数量
+    
+    Args:
+        orders: 环境返回的订单列表，每个元素是一个订单列表（对应一个节点）
+        env: 环境对象，包含所有节点信息
+    
+    Returns:
+        order_stats: 订单统计字典
+            - 'real_actions': 真实订单数量 (service_type=-1)
+            - 'fake_actions': 虚假订单数量 (service_type=0)
+            - 'fleet_actions': 车队订单数量 (service_type>0)
+            - 'total_actions': 总订单数量
+        total_idle_drivers: 所有节点的空闲司机总数
+    """
+    # 初始化订单统计
+    action_stats = {
+        'real_actions': 0,    # 真实订单
+        'fake_actions': 0,    # 虚假订单
+        'fleet_actions': 0,    # 车队订单
+        'total_actions': 0     # 总订单数
+    }
+    
+    # 统计 action 中各类订单的数量
+    for node_orders in orders:
+        for order in node_orders:
+            service_type = order.get_service_type()
+            if service_type == -1:
+                # 真实订单
+                action_stats['real_actions'] += 1
+            elif service_type == 0:
+                # 虚假订单
+                action_stats['fake_actions'] += 1
+            elif service_type > 0:
+                # 车队订单
+                action_stats['fleet_actions'] += 1
+            action_stats['total_actions'] += 1
+    
+    # 统计所有节点的空闲司机数量
+    total_idle_drivers = sum(node.idle_driver_num for node in env.nodes if node is not None)
+    
+    return action_stats, total_idle_drivers
+
+
 def get_parameter():
     """
     参数配置函数：定义和管理所有训练/测试的参数
@@ -46,7 +91,7 @@ def get_parameter():
 
     # ========== 测试相关参数 ==========
     # 测试基准目录路径（公共前缀）
-    test_base_dir = '../logs/synthetic/grid143/EnvStat326_OD143_FMRLmerge_Batch2000_Gamma0.97_Lambda0.95_Iter1_Ir0.001_Step144_Ent0.005_Minibatch5_Parallel5mix_MDP0_StateEmb2_Meta04_diffu1_DGCNC_relufeaNor3'
+    test_base_dir = '../logs/synthetic/grid143/EnvStat326_OD143_FMRLmerge_Batch1000_Gamma0.97_Lambda0.95_Iter1_Ir0.001_Step144_Ent0.005_Minibatch5_Parallel5mix_MDP0_StateEmb2_Meta0global_DGCNAC_relufeaNor1_20260103_02-57'
     
     # 测试日志目录（仅用于查看）
     args.test_dir = test_base_dir
@@ -59,7 +104,7 @@ def get_parameter():
     args.test = True
     
     # 测试迭代次数
-    args.TEST_ITER=3
+    args.TEST_ITER=1
     
     # 测试随机种子（保证测试可重复）
     args.TEST_SEED = 1314520
@@ -349,7 +394,7 @@ def get_parameter():
             - 7: 前 2 阶圆饼，其余圆环
     '''
     # Meta 策略选择
-    args.meta_choose =4
+    args.meta_choose =0
     
     # Meta 作用范围（最多考虑多少阶邻居）
     args.meta_scope = 4
@@ -739,7 +784,7 @@ def log_test_info(args):
     # 网格参数
     Logger.info(f"Grid Number: {args.grid_num}")  # 网格数量，决定了使用哪个数据集，可选值：36, 100, 121, 143
     Logger.info(f"Driver Number: {args.driver_num}")  # 司机数量，不同网格规模对应不同司机数（143网格对应2000，121对应1500，100对应1000）
-    Logger.info(f"Grid Layout: {args.M} x {args.N}")  # 网格布局的行列尺寸
+    # Logger.info(f"Grid Layout: {args.M} x {args.N}")  # 网格布局的行列尺寸
     Logger.info(f"Environment Type: {'Dynamic' if args.dynamic_env else 'Static'}")  # 环境类型，Static为静态环境（固定场景），Dynamic为动态环境（场景变化）
     if not args.dynamic_env:
         Logger.info(f"Environment Seed: {args.env_seed}")  # 静态环境的随机种子，用于保证场景可重现（不同网格使用不同固定种子）
@@ -792,6 +837,40 @@ def log_test_info(args):
     Logger.info("=" * 60)  # 分隔线
     Logger.info("TEST STARTED")  # 测试开始提示
     Logger.info("=" * 60)  # 分隔线
+    
+    # ========== 关键参数详细说明 ==========
+    """
+    args.team_rank: 团队排名，用于计算ORR奖励时考虑的邻域范围（当不使用meta时生效）
+        生效位置: 在train()和test()函数的ORR_reward计算中，通过env.nodes[i].layers_neighbors_id[rank]获取邻居节点
+        不同值影响: 
+            - rank=0: 只考虑自身节点的ORR熵，无合作
+            - rank=1: 考虑自身和1阶邻居的ORR熵加权平均
+            - rank>1: 考虑自身和1~rank阶所有邻居的ORR熵加权平均
+        值越大，合作范围越广，能够利用更大区域的信息，但计算开销增加
+    
+    args.global_share: 是否全局共享参数（当不使用meta时生效）
+        生效位置: 在Critic网络初始化和更新时，影响value函数参数是否所有智能体共享
+        不同值影响:
+            - True: 所有网格共享同一套value网络参数
+              优点: 参数量少，泛化能力强，训练稳定
+              缺点: 可能无法捕获不同网格的差异化特征
+            - False: 每个网格有独立的value参数
+              优点: 拟合能力强，可以学习每个网格的独特模式
+              缺点: 参数量大，易过拟合，训练不稳定
+    
+    args.FM_mode: 车队匹配模式，决定车辆如何接受跨网格订单
+        生效位置: 在agent.action()函数的action_ids生成和env.step()的订单分配中
+        可选值及影响:
+            - 'local': 本地匹配
+              作用: 每个网格的车辆只能接受本网格的订单
+              特点: 无跨网格调度，实现简单，但无法利用邻近网格的车辆/订单资源
+            - 'RLmerge': RL合并匹配（车队可以调度）
+              作用: 车队可以跨网格调度车辆来服务订单
+              特点: 实现了跨网格合作，能动态平衡供需，提高整体ORR，但决策空间更大
+            - 'RLsplit': RL分离匹配
+              作用: 订单和车辆的匹配在不同阶段分离处理
+              特点: 提供另一种合作机制，可能在某些场景下表现更好
+    """
 
 
 def test(env, agent , writer=None,args=None,device='cpu'):
@@ -825,6 +904,9 @@ def test(env, agent , writer=None,args=None,device='cpu'):
     for iteration in np.arange(args.TEST_SEED, args.TEST_SEED+args.TEST_ITER):
         # 记录测试开始时间
         t_begin=time.time()
+        Logger.info("=" * 50)  # 分隔线，标记新的测试回合开始
+        Logger.info(f"TEST ROUND #{iteration}")  # 当前测试回合编号
+        Logger.info("=" * 50)  # 分隔线
         print('\n---- ROUND: #{} ----'.format(iteration))
         
         # 计算随机种子（每次迭代使用不同种子）
@@ -886,28 +968,40 @@ def test(env, agent , writer=None,args=None,device='cpu'):
             #t1=time.time()
             # 根据动作 ID 获取订单
             orders = env.get_orders_by_id(action_ids)
+            
+            # 统计 action 中各类订单(不代表最终执行)的数量和空闲司机数量
+            action_stats, total_idle_drivers = count_action_orders_and_drivers(orders, env)
 
             # 执行环境步，生成订单并更新环境状态
             next_states_node,  next_order_states, next_order_idx, next_order_feature= env.step(orders, generate_order=1, mode='PPO2')
 
             #t2=time.time()
-
-            # 获取分布和熵信息（必须在 step 之后调用）
-            dist = env.step_get_distribution()              # 获取订单和司机的分布
-            entr_value = env.step_get_entropy()             # 获取熵值
-            order_dist, driver_dist = dist[:, 0], dist[:, 1]  # 分离订单分布和司机分布
             
-            # 计算 KL 散度：衡量订单分布与司机分布的差异
-            kl_value = np.sum(order_dist * np.log(order_dist / driver_dist))
+            # 记录当前时间步的关键信息
+            Logger.info_daily(f"TimeStep {T:03d}----------------")  # 当前时间步编号（000-143），格式化为3位数
             
+            order_stats = {
+                'real_orders': int(sum(orders.real_order_num for orders in env.nodes)),      # 真实订单
+                'fake_orders': int(sum(orders.fake_order_num for orders in env.nodes)),      # 虚假订单
+                'fleet_orders': int(sum(orders.fleet_order_num for orders in env.nodes)),    # 车队订单
+                'total_orders': int(sum(len(orders.orders) for orders in env.nodes))         # 总订单数
+            }            
+            
+            Logger.info_daily(f"  Total Idle Drivers: {total_idle_drivers}")  # 总空闲司机数，表示当前未接单的司机数量
+            Logger.info_daily(f"  Order  Stats: {order_stats}")  # action订单统计信息，包含各类订单的数量
+            Logger.info_daily(f"  Action Stats: {action_stats}")  # action订单统计信息，包含各类订单的数量
+            
+            Logger.info_daily(f"  Current GMV: {env.gmv:.2f}")  # 当前时间步的总GMV（美元），衡量系统当前时刻创造的经济价值
+            Logger.info_daily(f"  Current ORR: {env.order_response_rate:.4f}")  # 当前时间步的订单响应率，衡量当前时刻订单满足比例
+            # Logger.info_daily(f"  Fake ORR: {env.fake_response_rate:.4f}")  # 当前时间步的虚假订单响应率，衡量系统对虚拟订单的响应能力
+            # Logger.info_daily(f"  Fleet ORR: {env.fleet_response_rate:.4f}")  # 当前时间步的车队订单响应率，衡量车队整体服务能力
+        
             # 记录指标
-            entropy.append(entr_value)
-            kl.append(kl_value)
-            gmv.append(env.gmv)                          # 记录总订单价值
-            fake_orr.append(env.fake_response_rate)      # 记录虚假订单响应率
-            fleet_orr.append(env.fleet_response_rate)    # 记录车队响应率
+            gmv.append(env.gmv)                          # 记录总订单价值，所有网格当前时间步的GMV之和
+            fake_orr.append(env.fake_response_rate)      # 记录虚假订单响应率，系统对虚拟订单的响应比例
+            fleet_orr.append(env.fleet_response_rate)    # 记录车队订单响应率，车队整体服务订单的比例
             if env.order_response_rate >= 0:
-                order_response_rates.append(env.order_response_rate)  # 记录订单响应率
+                order_response_rates.append(env.order_response_rate)  # 记录订单响应率，已服务订单数除以总订单数
 
             # 判断回合是否结束
             if T==args.TIME_LEN-1:
@@ -1048,6 +1142,17 @@ def test(env, agent , writer=None,args=None,device='cpu'):
         # 打印测试结果
         print('>>> Time: [{0:<.4f}] Mean_ORR: [{1:<.4f}] GMV: [{2:<.4f}] Best_ORR: [{3:<.4f}] Best_GMV: [{4:<.4f}]'.format(
             t_end-t_begin,order_response_rates[-1], np.sum(gmv),best_orr,best_gmv ))
+        
+        # 使用 Logger.info 记录当前 iter 的统计信息
+        Logger.info(f"Round #{iteration} Summary")  # 当前回合总结
+        Logger.info(f"  Execution Time: {t_end-t_begin:.4f}s")  # 本回合执行时间（秒），从回合开始到结束的总耗时
+        Logger.info(f"  Current ORR: {order_response_rates[-1]:.4f}")  # 当前回合的订单响应率=已服务订单数/总订单数，衡量系统满足订单需求的能力，值越接近1越好
+        Logger.info(f"  Current GMV: {np.sum(gmv):.4f}")  # 当前回合的总订单价值=所有成功服务的订单价值之和，衡量系统创造的经济价值，值越大收益越高
+        Logger.info(f"  Best ORR: {best_orr:.4f}")  # 历史最佳订单响应率，所有测试回合中达到的最高订单响应率
+        Logger.info(f"  Best GMV: {best_gmv:.4f}")  # 历史最佳总订单价值，所有测试回合中达到的最高订单价值
+        # Logger.info(f"  Mean Fake ORR: {np.mean(fake_orr):.4f}")  # 平均虚假订单响应率=系统对虚拟订单的响应比例（虚拟订单是系统生成的测试用订单），用于验证系统的鲁棒性和在压力下的表现
+        # Logger.info(f"  Mean Fleet ORR: {np.mean(fleet_orr):.4f}")  # 平均车队订单响应率=车队整体完成订单的比例，衡量车队整体服务能力和调度效率
+        Logger.info("=" * 50)  # 分隔线，标记回合结束
         
         #agent.save_param(args.log_dir,'param')
         

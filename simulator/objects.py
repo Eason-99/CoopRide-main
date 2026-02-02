@@ -45,34 +45,130 @@ class Node(object):
 
     def __init__(self, index, fleet_help=False):
         # private
-        self._index = index   # unique node index.
+        self._index = index   # 节点的唯一索引标识符 # unique node index.
 
         # public
-        self.neighbors = []  # a list of nodes that neighboring the Nodes
-        self.orders = []     # a list of orders
-        self.orders_samples = []  # a list of orders includes a single fleet management: len(orders_samples) < len(orders)
-        self.orders_samples_num = 0  # real_order_num + 1(fake_order) + 6(fleet_order)
-        self.drivers = {}    # a dictionary of driver objects contained in this node
-        self.order_num = 0
-        self.real_order_num=0
-        self.idle_driver_num = 0  # number of idle drivers in this node
-        self.offline_driver_num = 0
-        self.fake_order_num = 0
-        self.fleet_order_num = 0
-        self.fleet_driver_num = 0  # number of fleet drivers in this node
-        self.order_generator = None
+        self.neighbors = []  # 与该节点相邻的节点列表 # a list of nodes that neighboring the Nodes
+        self.orders = []     # 该节点的所有订单列表（包括进行中的订单，不包括已完成的和超时的订单）
+        # 包含类型：
+        #   1. 真实订单(service_type=-1)：真实的乘客订单，有实际的出发地和目的地
+        #   2. 虚假订单(service_type=0)：用于平衡供需，起点和终点都在当前节点，价格为0
+        #   3. 车队订单(service_type>0)：车队管理生成的订单，表示司机可以移动到相邻节点的选项
+        # 增加场景：
+        #   - generate_order_real: 每个时间步生成num_order_t个真实订单 + 1个节点虚假订单 + idle_driver_num个司机虚假订单
+        #   - generate_order_fleet: 为每个车队司机生成到每个相邻节点的车队订单(fleet_driver_num × neighbor_num个)
+        #   - generate_order_random: 随机生成num_order_t个订单（调试用）
+        #   - generate_order_fleet_sample: 插入到每个相邻节点的车队订单（1个/邻居节点）
+        #   - add_order_real: 单个添加真实订单
+        # 清空场景：
+        #   - clean_node: 清空所有订单
+        #   - remove_unfinished_order: 移除超时或已完成的订单
+        #   - clean_order_fleet_fake: 移除所有虚假订单和车队订单，只保留真实订单
+        
+        self.orders_samples = []  # 用于决策采样的订单列表（用于策略训练时的action采样）
+        # 包含类型：
+        #   1. 所有真实订单(service_type=-1)：从orders中复制
+        #   2. 1个虚假订单(service_type=0)：表示留在原地选项
+        #   3. 每个邻居节点1个车队订单：表示移动到该邻居的选项，数量=邻居节点数
+        # 说明：orders_samples是orders的子集，用于简化决策空间，len(orders_samples) <= len(orders)
+        # 增加场景：
+        #   - generate_order_sample: 每个决策步骤前重建，先清空再添加真实订单+车队订单+虚假订单
+        #   - generate_order_random: 同步添加到orders和orders_samples（调试用）
+        # 清空场景：
+        #   - generate_order_sample: 每次重建前清空
+        #   - clean_node: 清空所有采样订单
+        
+        self.orders_samples_num = 0  # 采样订单数量统计（用于状态空间计算）
+        # 计算方式：真实订单数 + 1个虚假订单 + 邻居节点数量的车队订单
+        # 增加场景：
+        #   - generate_order_random: 每次增加num_order_t
+        #   - generate_order_sample: 重建时更新为len(orders_samples)
+        #   - remove_unfinished_order_sample: 移除过期或已完成的采样订单时减少
+        # 清空场景：
+        #   - generate_order_sample: 重建时先设为0
+        #   - clean_node: 清零
+        #   - remove_unfinished_order_sample: 重新计算为len(orders_samples)
+        
+        self.drivers = {}    # 该节点包含的司机对象字典 # a dictionary of driver objects contained in this node
+        self.order_num = 0  # 该节点的订单总数（所有类型的订单数量总和）
+        # 包含：真实订单数 + 虚假订单数 + 车队订单数
+        # 计算方式：len(self.orders)
+        # 增加场景：
+        #   - generate_order_real: 增加 num_order_t + 1(节点fake) + idle_driver_num(司机fake)
+        #   - generate_order_fleet: 增加 fleet_driver_num × neighbor_num
+        #   - generate_order_random: 增加 num_order_t
+        #   - generate_order_fleet_sample: 增加 neighbor_num
+        #   - add_order_real: 增加 1
+        # 减少/清空场景：
+        #   - simple_order_assign_real: 订单被分配后减少
+        #   - remove_unfinished_order: 移除过期或已完成订单
+        #   - clean_order_fleet_fake: 移除后重新计算
+        #   - clean_node: 清零
+        
+        self.real_order_num=0  # 该节点的真实订单数量（service_type=-1的订单）
+        # 说明：仅统计真实的乘客订单，不包括虚假订单和车队订单
+        # 增加场景：
+        #   - generate_order_real: 每个时间步增加 num_order_t
+        #   - add_order_real: 增加 1
+        # 减少场景：
+        #   - remove_unfinished_order: 真实订单超时或完成时减少
+        #   - clean_order_fleet_fake: 清空后重新计算为len(orders)
+        #   - clean_node: 清零
+        
+        self.idle_driver_num = 0  # 该节点的空闲司机数量 # number of idle drivers in this node
+        self.offline_driver_num = 0  # 该节点的离线司机数量 # number of offline drivers in this node
+        self.fake_order_num = 0  # 该节点的虚假订单数量（service_type=0）
+        # 说明：用于平衡供需的虚拟订单，起点和终点都在当前节点，价格为0
+        #   - 1个节点虚假订单：表示司机选择留在原地
+        #   - N个司机虚假订单：N=当前空闲司机数，给每个司机一个选择
+        # 增加场景：
+        #   - generate_order_real: 增加 1(节点fake) + idle_driver_num(司机fake)
+        # 减少场景：
+        #   - simple_order_assign_real: 虚假订单被"分配"时减少
+        #   - remove_unfinished_order: 虚假订单过期时减少
+        #   - clean_order_fleet_fake: 清零
+        
+        self.fleet_order_num = 0  # 该节点的车队订单数量（service_type>0）
+        # 说明：车队管理生成的订单，表示司机可以移动到相邻节点的选项
+        #   每个车队司机对每个邻居节点生成1个车队订单
+        #   service_type=1,2,3,... 分别代表不同的邻居节点
+        # 增加场景：
+        #   - generate_order_fleet: 增加 fleet_driver_num × neighbor_num
+        #   - generate_order_fleet_sample: 增加 neighbor_num（每个邻居1个）
+        # 减少场景：
+        #   - simple_order_assign_real: 车队订单被分配时减少
+        #   - remove_unfinished_order: 车队订单过期时减少
+        #   - clean_order_fleet_fake: 清零
+        
+        self.fleet_driver_num = 0  # 该节点的车队司机数量 # number of fleet drivers in this node
+        self.order_generator = None  # 订单生成器对象 # order generator object
 
-        self.n_side = 0      # the topology is a n-sided map
+        self.n_side = 0      # 地图拓扑的边数 # the topology is a n-sided map
         # layer 1 indices: layers_neighbors[0] = [[1,1], [0, 1], ...],
-        self.layers_neighbors = []
+        self.layers_neighbors = []  # 分层邻居节点坐标列表，用于多层级决策 # hierarchical neighbor node coordinates list
         # layer 2 indices layers_neighbors[1]
-        self.layers_neighbors_id = []  # layer 1: layers_neighbors_id[0] = [2, 1,.]
-        self._last_state = None
-        self._last_order_list = None
-        self.reward = 0
-        self._entropy = 0.  # build information for policy training
-        self._gmv=0
-        self.new_order=0
+        self.layers_neighbors_id = []  # 分层邻居节点ID列表，用于快速索引 # hierarchical neighbor node IDs list
+        self._last_state = None  # 记录上一次的状态信息 # last state information
+        self._last_order_list = None  # 记录上一次的订单列表（用于历史记录和训练）
+        # 包含：orders中所有订单的状态信息
+        # 更新场景：record_history()在每个时间步调用，保存当前所有订单的状态
+        # 用途：用于策略训练时的时序信息
+        
+        self.reward = 0  # 该节点的奖励值 # reward value of this node
+        self._entropy = 0.  # 熵值，用于策略训练的供需平衡信息 # entropy for policy training
+        # 计算方式：idle_driver_num / max(1, real_order_num)
+        # 含义：表示供需平衡程度，值越小表示需求越大于供给（紧急状态）
+        
+        self._gmv=0  # 总交易额（Gross Merchandise Value） # gross merchandise value
+        # 说明：该节点所有已分配订单的总收入
+        # 更新场景：simple_order_assign_real和simple_order_assign_real_sample在每个分配步骤后更新
+        
+        self.new_order=0  # 当前时间步新生成的真实订单数量
+        # 说明：记录每个时间步生成的真实订单数，用于计算订单满足率(ORR)等指标
+        # 更新场景：
+        #   - generate_order_real: 每个时间步设为 num_order_t
+        #   - add_order_real: 每次增加 1
+        # 清空：每个时间步重置
 
 
     def get_index(self):
