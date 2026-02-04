@@ -16,6 +16,10 @@ from collections import namedtuple
 import math
 import scipy.signal
 
+import sys
+sys.path.append('../z_wyc_add')
+# from check_checkpoint import change_weight
+from llm_optimized_weights import compute_llm_correction
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0, init=True):
     if init==False:
@@ -1128,6 +1132,11 @@ class PPO:
 
     def load_param(self,load_dir,resume=False):
         state=torch.load(load_dir)
+        # try:
+        #     state['actor net'] = change_weight(state['actor net'])
+        # except Exception as e:
+        #     print(f"Error in changing weight: {e}")
+        
         self.actor.load_state_dict(state['actor net'])
         self.critic.load_state_dict(state['critic net'])
 
@@ -1387,85 +1396,208 @@ class PPO:
         action = np.clip(action, low, high)
         return action
 
-    def action(self, state,order, state_rnn_actor, state_rnn_critic ,mask,order_idx ,device='cpu', random_action=False ,sample=True, MDP=None,need_full_prob=False, FM_mode='local'):
-        """ Compute current action for all grids give states
-        :param s: grid_num x stat_dim,
+    def action(self, state,order, state_rnn_actor, state_rnn_critic ,mask,order_idx ,device='cpu', random_action=False ,sample=True, MDP=None,need_full_prob=False, FM_mode='local', llm_enhance=False, llm_optimized_weights=None):
+        """
+        Compute current action for all grids give states
+        
+        ============ state 字段说明 ============
+        state: 网格状态特征，shape = (grid_num, state_dim)
+        state_dim = 5 + 3*l_max (+ llm_dim)
+        
+        字段索引说明:
+        - state[..., 0]: 时间步 (time step)
+        - state[..., 1]: 网格ID (grid id)
+        - state[..., 2]: 空闲司机数量 (idle driver num)
+        - state[..., 3]: 真实订单数量 (real order num)
+        - state[..., 4]: 本地熵值 (local entropy = idle_driver_num / (real_order_num + idle_driver_num))
+        - state[..., 5]: 相对全局熵的绝对差 (abs(local_entropy - global_entropy))
+        - state[..., 6:6+l_max]: 价格分布 (price distribution, l_max个价格区间的概率分布)
+        - state[..., 6+l_max:6+2*l_max]: 时间分布 (time distribution, l_max个时长的概率分布)
+        - state[..., 6+2*l_max:6+3*l_max]: 目的地层级分布 (end layer distribution, l_max个目的地层级的概率分布)
+        - state[..., 6+3*l_max:]: 全局指令向量 (global instruction vector, 可选, 维度由llm_dim决定)
+        
+        ============ order 字段说明 ============
+        order: 订单特征，shape = (grid_num, max_order_num, order_dim)
+        order_dim = 6 或 7 (取决于use_order_time和use_mdp参数)
+        
+        字段索引说明 (use_order_time=False时):
+        - order[..., 0]: 起点网格ID (origin grid id)
+        - order[..., 1]: 终点网格ID (destination grid id)
+        - order[..., 2]: 订单价格 (order price)
+        - order[..., 3]: 订单时长 (order duration, 单位: 时间步)
+        - order[..., 4]: 服务类型 (service type):
+            * -1: 本地真实订单
+            * 0: 车队管理订单
+            * 1: 相邻网格订单
+            * <0: 假订单/留在本地选项
+        - order[..., 5]: 熵值差异 (entropy difference = end_entropy - start_entropy, 如果new_order_entropy=True)
+        - order[..., 6]: 司机数量差异 (driver num diff = end_driver_num - start_driver_num, 如果new_order_entropy=True)
+        - order[..., 7]: 订单数量差异 (order num diff = end_order_num - start_order_num, 如果new_order_entropy=True)
+        - order[..., -1]: MDP优势值 (MDP advantage value, 如果use_mdp>0)
+        
+        字段索引说明 (use_order_time=True时):
+        - order[..., 0]: 时间步 (time step)
+        - order[..., 1]: 起点网格ID (origin grid id)
+        - order[..., 2]: 终点网格ID (destination grid id)
+        - order[..., 3]: 订单价格 (order price)
+        - order[..., 4]: 订单时长 (order duration)
+        - order[..., 5]: 服务类型 (service type)
+        - order[..., 6:]: 其他特征 (同上，索引相应后移)
+        
+        ============ 参数说明 ============
+        :param state: grid_num x state_dim, 网格状态特征
+        :param order: grid_num x max_order_num x order_dim, 订单特征
+        :param mask: grid_num x max_order_num, 订单有效掩码 (True表示有效订单)
         :return:
         """
 
-        mask=mask.bool()
+        # ========== 初始化阶段 ==========
+        mask=mask.bool()  # 确保mask是bool类型
+        
+        # 随机动作模式（主要用于测试或探索）
         if random_action:
+            # 生成随机动作，范围在[-1, 1]之间均匀分布
             action=torch.randn(state.shape[0],self.action_dim).uniform_(-1,1)
         else:
-            state=state.to(device)
-            with torch.no_grad():
+            # ========== 网络前向推理 ==========
+            state=state.to(device)  # 将状态移到目标设备
+            with torch.no_grad():  # 不计算梯度，节省内存
+                # Actor网络：计算策略logits和更新后的RNN隐藏状态
+                # return_logit=True: 返回未经过softmax的logits
                 logits, state_rnn_actor = self.actor(state, order.to(device), mask.to(device), self.adj ,state_rnn_actor.to(device), return_logit = True)
+                # Critic网络：计算本地价值函数
                 value_local, state_rnn_critic = self.critic(state, self.adj , state_rnn_critic.to(device))
+                # Critic网络：计算全局价值函数
                 value_global, state_rnn_critic = self.critic.get_global_value(state, self.adj , state_rnn_critic.to(device))
-        logits=logits.cpu()
+                
+                # ==========================================================
+                # [LLM Mod] 开始：注入混合残差控制
+                # ==========================================================
+                if llm_enhance:
+                    # A. 调用 LLM 修正项计算函数 (确保在同一 device 上计算)
+                    llm_correction = compute_llm_correction(llm_optimized_weights, state, order.to(device), mask.to(device), device=device)
+                    
+                    # B. 定义混合系数 Lambda (可以是固定超参，也可以是 LLM 输出的动态值)
+                    # 建议先设为 1.0 或 0.5 进行测试
+                    lambda_coef = 1.0 
+                    
+                    # C. 执行残差叠加: Final_Logits = NN_Logits + Lambda * LLM_Logits
+                    # 这一步直接修改了相似度分数，改变了后续的概率分布
+                    logits = logits + lambda_coef * llm_correction
+                
+                # ==========================================================
+                # [LLM Mod] 结束
+                # ==========================================================
+        
+        # ========== 将结果移到CPU ==========
+        logits=logits.cpu()  # 策略logits移到CPU
         #logits=torch.exp(logits)
-        value_local=value_local.cpu()
-        value_global = value_global.cpu()
-        action=torch.zeros((self.agent_num,self.max_order_num),dtype=torch.float32)
-        mask_order= torch.zeros((mask.shape[0],mask.shape[1],mask.shape[1]),dtype=torch.bool)
-        mask_action = torch.zeros((self.agent_num,self.max_order_num),dtype=torch.bool)
-        mask_entropy = torch.zeros((self.agent_num,self.max_order_num),dtype=torch.bool)
-        driver_record=torch.zeros((self.agent_num,),dtype=torch.long)
-        oldp = torch.zeros((self.agent_num,self.max_order_num),dtype=torch.float32)
-        mask_agent=torch.ones((self.agent_num,),dtype=torch.bool)
-        action_ids=[]
-        selected_idx=[]
-        high_ratio = self.high_value_ratio
+        value_local=value_local.cpu()  # 本地价值移到CPU
+        value_global = value_global.cpu()  # 全局价值移到CPU
+        
+        # ========== 初始化动作和相关变量 ==========
+        action=torch.zeros((self.agent_num,self.max_order_num),dtype=torch.float32)  # 动作向量
+        mask_order= torch.zeros((mask.shape[0],mask.shape[1],mask.shape[1]),dtype=torch.bool)  # 订单掩码（三维）
+        mask_action = torch.zeros((self.agent_num,self.max_order_num),dtype=torch.bool)  # 动作掩码（哪些司机有有效动作）
+        mask_entropy = torch.zeros((self.agent_num,self.max_order_num),dtype=torch.bool)  # 熵计算掩码
+        driver_record=torch.zeros((self.agent_num,),dtype=torch.long)  # 记录每个网格实际分配的司机数量
+        oldp = torch.zeros((self.agent_num,self.max_order_num),dtype=torch.float32)  # 旧概率（用于PPO的ratio计算）
+        mask_agent=torch.ones((self.agent_num,),dtype=torch.bool)  # 智能体掩码（哪些智能体参与训练）
+        action_ids=[]  # 实际选择的订单ID列表
+        selected_idx=[]  # 选择索引列表（用于MDP学习）
+        
+        # ========== 订单响应率（ORR）自适应调整 ==========
+        high_ratio = self.high_value_ratio  # 初始化高价值比例
+        # 如果设置了最小ORR阈值，检查当前ORR是否低于阈值
         if self.min_orr_threshold is not None:
-            current_orr = getattr(self.env, "order_response_rate", None)
+            current_orr = getattr(self.env, "order_response_rate", None)  # 获取当前订单响应率
+            # 如果当前ORR低于阈值，禁用高价值优先策略，优先保证订单响应率
             if current_orr is not None and current_orr >= 0 and current_orr < self.min_orr_threshold:
                 high_ratio = 0.0
         # sample orders
+        # ========== FM_mode 说明 ==========
+        # FM_mode 决定司机分配策略，主要有三种模式：
+        # 1. 'local': 基础本地模式，司机从所有可用订单中采样（包括假订单）
+        # 2. 'RLmerge': 高价值优先混合模式
+        #    - 根据high_ratio比例，将部分司机分配给高价值真实订单
+        #    - 剩余司机从所有订单池中选择（包括假订单和车队订单）
+        #    - 允许灵活调度，但优先保证高价值订单
+        # 3. 'RLsplit': 硬分段模式
+        #    - 前real_num个司机只能从真实订单中选择
+        #    - 剩余司机只能从车队订单和假订单中选择
+        #    - 严格分离订单类型，无交叉
+        # ====================================
         if FM_mode=='local':
+            # ========== 本地模式：司机从所有可用订单中采样 ==========
+            # 策略：每个司机独立地从订单池中选择一个订单（包括假订单）
+            # 选择后订单从池中移除，保证不重复选择
+            # ==============================================
             for i in range(state.shape[0]):
-                max_driver_num= self.max_order_num
-                driver_num = self.env.nodes[i].idle_driver_num
-                driver_num = min(driver_num,max_driver_num)
-                driver_record[i]=driver_num
-                #fake_num= self.env.nodes[i].fleet_order_num+1       # the last  fake order is stay local
-                #real_num= self.env.nodes[i].real_order_num
+                max_driver_num= self.max_order_num  # 每个网格的最大司机数量限制
+                driver_num = self.env.nodes[i].idle_driver_num  # 当前网格的空闲司机数量
+                driver_num = min(driver_num,max_driver_num)  # 不超过最大限制
+                driver_record[i]=driver_num  # 记录实际分配的司机数量
+                #fake_num= self.env.nodes[i].fleet_order_num+1       # 假订单数量（车队订单+1个留本地选项）
+                #real_num= self.env.nodes[i].real_order_num  # 真实订单数量
 
-                if driver_num==0 or len(order_idx[i])==1:
-                    choose=[0]
-                    mask_agent[i]=0
+                if driver_num==0 or len(order_idx[i])==1:  # 没有司机或只有假订单
+                    choose=[0]  # 选择留本地（索引0）
+                    mask_agent[i]=0  # 该智能体不参与训练
                 else:
-                    choose=[]
-                    logit=logits[i][mask[i]].clone()
-                    prob = F.softmax(logit, dim=-1)
-                    mask_d= mask[i].clone()
-                    mask_entropy[i,0]=1
+                    choose=[]  # 存储选择的订单索引
+                    logit=logits[i][mask[i]].clone()  # 获取有效订单的logit
+                    prob = F.softmax(logit, dim=-1)  # 计算概率分布
+                    mask_d= mask[i].clone()  # 动态掩码，用于标记已选择的订单
+                    mask_entropy[i,0]=1  # 标记需要计算熵的订单（假订单）
+                    
+                    # 为每个司机选择订单
                     for d in range(driver_num):
-                        mask_order[i,d]=mask_d
+                        mask_order[i,d]=mask_d  # 记录当前司机可选订单的掩码
+                        
+                        # 根据sample参数决定采样方式
                         if sample:
+                            # 采样模式：根据概率分布随机采样
                             choose.append(torch.multinomial(prob,1 , replacement=True))
                         else:
+                            # 贪婪模式：选择概率最大的订单
                             choose.append(torch.argmax(prob))
     
-                        mask_action[i,d]=1
-                        oldp[i,d]=prob[choose[-1]]
-                        #if order[i,choose[-1],5]<0:
+                        mask_action[i,d]=1  # 标记该司机有有效动作
+                        oldp[i,d]=prob[choose[-1]]  # 记录旧概率，用于PPO更新
+                        
+                        # 如果选择的不是假订单（索引>0），则从候选池中移除
                         if choose[-1]>0:
-                            mask_d[choose[-1]]=0
-                            logit[choose[-1]]= -math.inf
-                            prob = F.softmax(logit, dim=-1)
+                            mask_d[choose[-1]]=0  # 将该订单设为不可选
+                            logit[choose[-1]]= -math.inf  # 将logit设为负无穷
+                            prob = F.softmax(logit, dim=-1)  # 重新计算概率分布
+                        
+                        # 如果假订单概率为1，说明没有其他可选订单，提前结束
                         if prob[0]==1 :
                             break
-                action[i,:len(choose)] = torch.Tensor(choose)
-                action_ids.append([ order_idx[i][idx]  for idx in choose])
-                select=[]   # 给MDP学
+                            
+                action[i,:len(choose)] = torch.Tensor(choose)  # 设置动作向量
+                action_ids.append([ order_idx[i][idx]  for idx in choose])  # 记录实际选择的订单ID
+                
+                # 构建选择索引（用于MDP学习）
+                select=[]   # 给MDP学的选择索引
                 if driver_num==0:
                     select=[]
                 elif len(order_idx[i])==1:
-                    select=[0]*driver_num
+                    select=[0]*driver_num  # 所有司机都选择留本地
                 else:
+                    # 前len(choose)个司机选择choose中的订单，剩余司机选择留本地
                     select = choose+ ([0]*(driver_num-len(choose)))
                 selected_idx.append(select)
         elif FM_mode=='RLmerge':
+            # ========== RLmerge模式：高价值优先混合 ==========
+            # 策略：
+            # 1. 将司机分为两组：
+            #    - high_quota个司机：强制从高价值真实订单池中选择
+            #    - 剩余司机：从全部订单池选择（包括假订单）
+            # 2. 高价值订单池：按价格排序后的前high_count个真实订单
+            # 3. 优势：保证高价值订单优先被服务，同时保留灵活性
+            # ==============================================
+
             for i in range(state.shape[0]):
                 max_driver_num= self.max_order_num
                 driver_num = self.env.nodes[i].idle_driver_num
@@ -1523,6 +1655,14 @@ class PPO:
                     select = choose
                 selected_idx.append(select)
         elif FM_mode=='RLsplit':
+            # ========== RLsplit模式：硬分段分配 ==========
+            # 策略：
+            # 1. 将司机严格分为两组，无交叉：
+            #    - 第一组（前real_num个司机）：只能从真实订单选择，不能选假订单
+            #    - 第二组（剩余司机）：只能从车队订单+假订单选择，不能选真实订单
+            # 2. 每个司机选择后，对应订单从池中移除（mask_d设为0）
+            # 3. 特点：严格分离，保证一定数量的司机只服务真实订单
+            # ==============================================
             for i in range(state.shape[0]):
                 max_driver_num=self.max_order_num
                 driver_num = self.env.nodes[i].idle_driver_num

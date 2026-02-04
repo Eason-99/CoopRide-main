@@ -17,6 +17,7 @@ import setproctitle
 from torch.utils.tensorboard import SummaryWriter
 sys.path.append('../z_wyc_add')
 from log import Logger
+from llm_optimized_weights import compute_llm_correction, call_openai_for_weight_optimization
 
 os.environ["CUDA_VISIBLE_DEVICES"]='0'
 setproctitle.setproctitle("didi@wjw")
@@ -84,6 +85,10 @@ def get_parameter():
     # 创建参数解析器
     parser = argparse.ArgumentParser()
     args= parser.parse_args()
+    # ========== ！！！！！ProPS参数！！！！！ ==========
+    args.llm_enhance = True
+    args.llm_enhance_weight_path = '../z_wyc_add/llm_enhance_weight/'
+    args.llm_enhance_weight_file = 'LLM_Optimized_Weights'
 
     # ========== 基础训练参数 ==========
     # 最大迭代次数
@@ -91,7 +96,8 @@ def get_parameter():
 
     # ========== 测试相关参数 ==========
     # 测试基准目录路径（公共前缀）
-    test_base_dir = '../logs/synthetic/grid143/EnvStat326_OD143_FMRLmerge_Batch1000_Gamma0.97_Lambda0.95_Iter1_Ir0.001_Step144_Ent0.005_Minibatch5_Parallel5mix_MDP0_StateEmb2_Meta0global_DGCNAC_relufeaNor1_20260103_02-57'
+    # test_base_dir = '../logs/synthetic/grid143/EnvStat326_OD143_FMRLmerge_Batch1000_Gamma0.97_Lambda0.95_Iter1_Ir0.001_Step144_Ent0.005_Minibatch5_Parallel5mix_MDP0_StateEmb2_Meta0global_DGCNAC_relufeaNor1_20260103_02-57'
+    test_base_dir = '../z_wyc_add/ckpts/test001'
     
     # 测试日志目录（仅用于查看）
     args.test_dir = test_base_dir
@@ -104,7 +110,7 @@ def get_parameter():
     args.test = True
     
     # 测试迭代次数
-    args.TEST_ITER=1
+    args.TEST_ITER=2
     
     # 测试随机种子（保证测试可重复）
     args.TEST_SEED = 1314520
@@ -316,7 +322,7 @@ def get_parameter():
     # 'local': 本地匹配
     # 'RLmerge': RL 合并匹配（车队可以调度）
     # 'RLsplit': RL 分离匹配
-    args.FM_mode = ['local','RLmerge','RLsplit' ][1]
+    args.FM_mode = ['local','RLmerge','RLsplit' ][0]
     
     # 是否移除虚假订单
     args.remove_fake_order=False
@@ -872,6 +878,75 @@ def log_test_info(args):
               特点: 提供另一种合作机制，可能在某些场景下表现更好
     """
 
+def update_ckpt(agent):
+    
+    # 保存当前模型参数
+    pkl_name = 'Best_' + time.strftime("%Y%m%d_%H-%M-%S") + '.pkl'
+    agent.save_param(args.test_dir, pkl_name)
+    #覆盖旧的Best.pkl, 便于循环训练
+    agent.save_param(args.test_dir, 'Best.pkl')
+
+
+def update_episode_reward_buffer(iteration, llm_optimized_weights, order_response_rates, gmv, 
+                                 episode_reward_buffer, best_orr_records, best_gmv_records):
+    """
+    维护 episode_reward_buffer，保存当前记录和 ORR/GMV 最好的3条记录
+    
+    Args:
+        iteration: 当前回合编号
+        llm_optimized_weights: LLM优化权重tensor
+        order_response_rates: 订单响应率列表
+        gmv: GMV列表
+        episode_reward_buffer: 历史记录列表
+        best_orr_records: ORR最好的3条记录列表
+        best_gmv_records: GMV最好的3条记录列表
+    
+    Returns:
+        tuple: (episode_reward_buffer, best_orr_records, best_gmv_records)
+               更新后的记录列表
+    """
+    # 当前回合的记录
+    current_record = {
+        'step_num': iteration,
+        'weights': llm_optimized_weights.tolist() if llm_optimized_weights is not None else [0.0] * 10,
+        'orr': order_response_rates[-1] if order_response_rates else 0.0,
+        'gmv': np.sum(gmv)
+    }
+    
+    # 添加到历史记录（创建新列表，不修改原列表）
+    new_episode_reward_buffer = episode_reward_buffer + [current_record]
+    
+    # 更新ORR最好的3条记录
+    current_orr = current_record['orr']
+    # 检查是否应该插入到ORR最佳记录中
+    new_best_orr_records = best_orr_records.copy()
+    if len(new_best_orr_records) < 3 or current_orr > new_best_orr_records[-1]['orr']:
+        new_best_orr_records = new_best_orr_records + [current_record]
+        # 按ORR降序排序
+        new_best_orr_records.sort(key=lambda x: x['orr'], reverse=True)
+        # 只保留前3条
+        new_best_orr_records = new_best_orr_records[:3]
+    
+    # 更新GMV最好的3条记录
+    current_gmv = current_record['gmv']
+    # 检查是否应该插入到GMV最佳记录中
+    new_best_gmv_records = best_gmv_records.copy()
+    if len(new_best_gmv_records) < 3 or current_gmv > new_best_gmv_records[-1]['gmv']:
+        new_best_gmv_records = new_best_gmv_records + [current_record]
+        # 按GMV降序排序
+        new_best_gmv_records.sort(key=lambda x: x['gmv'], reverse=True)
+        # 只保留前3条
+        new_best_gmv_records = new_best_gmv_records[:3]
+    
+    # 记录episode_reward_buffer信息
+    Logger.info("=" * 60)
+    Logger.info(f"Episode Reward Buffer Size: {len(new_episode_reward_buffer)}")
+    Logger.info(f"Current Round Record (Step: {iteration}), Weights: {current_record['weights']}, ORR: {current_record['orr']:.4f}, GMV: {current_record['gmv']:.2f}")
+    Logger.info(f"Best ORR Records (Top {len(new_best_orr_records)}): {[(r['step_num'], f'{r['orr']:.4f}', f'{r['gmv']:.2f}') for r in new_best_orr_records]}")
+    Logger.info(f"Best GMV Records (Top {len(new_best_gmv_records)}): {[(r['step_num'], f'{r['orr']:.4f}', f'{r['gmv']:.2f}') for r in new_best_gmv_records]}")
+    Logger.info("=" * 60)
+    
+    return new_episode_reward_buffer, new_best_orr_records, new_best_gmv_records
 
 def test(env, agent , writer=None,args=None,device='cpu'):
     """
@@ -892,14 +967,24 @@ def test(env, agent , writer=None,args=None,device='cpu'):
         2. 不进行模型参数更新
         3. 评估模型在多个回合中的表现
         4. 记录关键指标（GMV, ORR, KL, Entropy等）
+        5. 维护 episode_reward_buffer，保存当前记录和 ORR/GMV 最佳记录
     """
     # 设置固定随机种子，确保测试结果可重复
     np.random.seed(args.TEST_SEED)
-    
+
     # 初始化最佳性能指标
     best_gmv=0
     best_orr=0
     
+    # 初始化 episode_reward_buffer 和最佳记录列表
+    episode_reward_buffer = []  # 存储所有历史记录
+    best_orr_records = []        # 存储ORR最好的3条记录
+    best_gmv_records = []        # 存储GMV最好的3条记录
+    
+    # 初始化所有迭代的 ORR 和 GMV 记录数组
+    all_orr_records = []         # 存储每次迭代的 ORR
+    all_gmv_records = []         # 存储每次迭代的 GMV
+
     # 外层循环：测试迭代次数
     for iteration in np.arange(args.TEST_SEED, args.TEST_SEED+args.TEST_ITER):
         # 记录测试开始时间
@@ -908,10 +993,10 @@ def test(env, agent , writer=None,args=None,device='cpu'):
         Logger.info(f"TEST ROUND #{iteration}")  # 当前测试回合编号
         Logger.info("=" * 50)  # 分隔线
         print('\n---- ROUND: #{} ----'.format(iteration))
-        
+
         # 计算随机种子（每次迭代使用不同种子）
         RANDOM_SEED = iteration*1000
-        
+
         # 根据环境类型重置随机种子
         if args.dynamic_env:
             env.reset_randomseed(RANDOM_SEED)  # 动态环境使用计算出的随机种子
@@ -929,25 +1014,54 @@ def test(env, agent , writer=None,args=None,device='cpu'):
 
         # 环境重置，获取初始状态
         states_node, _, order_states, order_idx, order_feature, global_order_states = env.reset(mode='PPO2')
-        
+
         # 处理初始状态，state维度为 (grid_num, 119)
         state=agent.process_state(states_node,T)
-        
+
         # 初始化 RNN 隐藏状态（用于 Actor）
         state_rnn_actor = torch.zeros((1,agent.agent_num,agent.hidden_dim),dtype=torch.float)
-        
+
         # 初始化 RNN 隐藏状态（用于 Critic）
         state_rnn_critic = torch.zeros((1,agent.agent_num,agent.hidden_dim),dtype=torch.float)
-        
+
         # 处理订单状态
         order,mask_order=agent.process_order(order_states,T)
-        
+
         # 移除订单网格信息
         order=agent.remove_order_grid(order)
-        
+
         # 屏蔽虚假订单
         mask_order= agent.mask_fake(order, mask_order)
 
+        # LLM 增强权重加载 ==================================================
+        weights_path = None
+        llm_optimized_weights = None
+        if args.llm_enhance:
+            Logger.info("LLM enhancement is enabled.")
+
+            # 权重tensor路径
+            weights_path = args.llm_enhance_weight_path + args.llm_enhance_weight_file + '.pkl'
+
+            # 判断路径是否存在，不存在则创建全0的tensor并保存
+            if not os.path.exists(weights_path):
+                Logger.info(f"权重文件 {weights_path} 不存在，创建全0的10维tensor")
+                llm_optimized_weights = torch.zeros(10)
+                torch.save(llm_optimized_weights, weights_path)
+                Logger.info(f"已创建并保存权重tensor: {llm_optimized_weights}")
+            else:
+                # 路径存在，加载权重tensor
+                try:
+                    llm_optimized_weights = torch.load(weights_path)
+                    # 校验维度是否为10
+                    if llm_optimized_weights.dim() != 1 or llm_optimized_weights.shape[0] != 10:
+                        raise ValueError(f"权重tensor维度错误，期望形状为(10,)，实际形状为{llm_optimized_weights.shape}")
+                    Logger.info(f"成功加载权重tensor: {llm_optimized_weights}")
+                except Exception as e:
+                    Logger.warning(f"加载权重tensor失败: {e}，使用全0的默认值")
+                    llm_optimized_weights = torch.zeros(10)
+
+            Logger.info(f"权重含义: w0=缺口权重, w1=价格权重, w2=耗时权重, w3=效率权重, w4=真实订单优先, w5=拥堵推离本地, w6=去订单多的地方, w7=跨区惩罚, w8=异常状态修正, w9=长期价值")
+        # ====================================================================
 
         # 内层循环：一天的时间步
         for T in np.arange(args.TIME_LEN):
@@ -957,45 +1071,71 @@ def test(env, agent , writer=None,args=None,device='cpu'):
             for i in range(len(order_idx)):
                 assert len(order_idx[i])==len(order_states[i]), 'dim error'
 
-            #t0=time.time()
+            # t0=time.time()
             # Agent 采样动作
             # 参数说明：
             #   - sample=True: 使用采样而非确定性动作
             #   - random_action=False: 不使用随机动作
             #   - FM_mode: 匹配模式（local/RLmerge/RLsplit）
-            action, local_value, global_value ,logp, mask_agent, mask_order_multi, mask_action ,  mask_entropy ,next_state_rnn_actor, next_state_rnn_critic ,action_ids, selected_ids = agent.action(state,order,state_rnn_actor, state_rnn_critic,mask_order,order_idx ,device,sample=True,random_action=False, FM_mode = args.FM_mode)
-            
-            #t1=time.time()
+            (
+                action,
+                local_value,
+                global_value,
+                logp,
+                mask_agent,
+                mask_order_multi,
+                mask_action,
+                mask_entropy,
+                next_state_rnn_actor,
+                next_state_rnn_critic,
+                action_ids,
+                selected_ids,
+            ) = agent.action(
+                state,
+                order,
+                state_rnn_actor,
+                state_rnn_critic,
+                mask_order,
+                order_idx,
+                device,
+                sample=True,
+                random_action=False,
+                FM_mode=args.FM_mode,
+                llm_enhance=args.llm_enhance,
+                llm_optimized_weights=llm_optimized_weights,
+            )
+
+            # t1=time.time()
             # 根据动作 ID 获取订单
             orders = env.get_orders_by_id(action_ids)
-            
+
             # 统计 action 中各类订单(不代表最终执行)的数量和空闲司机数量
             action_stats, total_idle_drivers = count_action_orders_and_drivers(orders, env)
 
             # 执行环境步，生成订单并更新环境状态
             next_states_node,  next_order_states, next_order_idx, next_order_feature= env.step(orders, generate_order=1, mode='PPO2')
 
-            #t2=time.time()
-            
+            # t2=time.time()
+
             # 记录当前时间步的关键信息
             Logger.info_daily(f"TimeStep {T:03d}----------------")  # 当前时间步编号（000-143），格式化为3位数
-            
+
             order_stats = {
                 'real_orders': int(sum(orders.real_order_num for orders in env.nodes)),      # 真实订单
                 'fake_orders': int(sum(orders.fake_order_num for orders in env.nodes)),      # 虚假订单
                 'fleet_orders': int(sum(orders.fleet_order_num for orders in env.nodes)),    # 车队订单
                 'total_orders': int(sum(len(orders.orders) for orders in env.nodes))         # 总订单数
             }            
-            
+
             Logger.info_daily(f"  Total Idle Drivers: {total_idle_drivers}")  # 总空闲司机数，表示当前未接单的司机数量
             Logger.info_daily(f"  Order  Stats: {order_stats}")  # action订单统计信息，包含各类订单的数量
             Logger.info_daily(f"  Action Stats: {action_stats}")  # action订单统计信息，包含各类订单的数量
-            
+
             Logger.info_daily(f"  Current GMV: {env.gmv:.2f}")  # 当前时间步的总GMV（美元），衡量系统当前时刻创造的经济价值
             Logger.info_daily(f"  Current ORR: {env.order_response_rate:.4f}")  # 当前时间步的订单响应率，衡量当前时刻订单满足比例
             # Logger.info_daily(f"  Fake ORR: {env.fake_response_rate:.4f}")  # 当前时间步的虚假订单响应率，衡量系统对虚拟订单的响应能力
             # Logger.info_daily(f"  Fleet ORR: {env.fleet_response_rate:.4f}")  # 当前时间步的车队订单响应率，衡量车队整体服务能力
-        
+
             # 记录指标
             gmv.append(env.gmv)                          # 记录总订单价值，所有网格当前时间步的GMV之和
             fake_orr.append(env.fake_response_rate)      # 记录虚假订单响应率，系统对虚拟订单的响应比例
@@ -1011,11 +1151,11 @@ def test(env, agent , writer=None,args=None,device='cpu'):
 
             # 计算基础奖励（基于 GMV）
             reward = torch.Tensor([ node.gmv for node in env.nodes] ) 
-            
+
             # 获取空闲司机数和真实订单数
             driver_num= torch.Tensor([node.idle_driver_num for node in env.nodes])
             order_num= torch.Tensor([node.real_order_num for node in env.nodes])
-            
+
             # 记录分布日志
             agent.logs.push_log_distribution(T,reward, driver_num,order_num)
 
@@ -1025,11 +1165,11 @@ def test(env, agent , writer=None,args=None,device='cpu'):
                 driver_num= torch.Tensor([node.idle_driver_num for node in env.nodes])+1e-5
                 order_num= torch.Tensor([node.real_order_num for node in env.nodes])+1e-5
                 driver_order=torch.stack([driver_num,order_num],dim=1)
-                
+
                 # 计算 ORR 熵：衡量供需平衡程度
                 # 使用 min(driver, order) / max(driver, order) 作为熵指标
                 ORR_entropy= torch.min(driver_order,dim=1)[0]/torch.max(driver_order,dim=1)[0]
-                
+
                 '''
                 ORR_entropy= ORR_entropy*torch.log(ORR_entropy)
 
@@ -1040,7 +1180,7 @@ def test(env, agent , writer=None,args=None,device='cpu'):
                 driver_num/=torch.sum(driver_num)
                 ORR_KL = torch.sum(order_num * torch.log(order_num / driver_num))
                 '''
-                
+
                 # 考虑邻域的 ORR（如果设置了 team_rank）
                 for i in range(args.grid_num):
                     num=1
@@ -1050,18 +1190,16 @@ def test(env, agent , writer=None,args=None,device='cpu'):
                         num+=len(neighb)
                         ORR_reward[i]+= torch.sum(ORR_entropy[neighb])
                     ORR_reward[i]/=num
-                #ORR_reward= -ORR_reward*10-ORR_KL+2.5
-                
+                # ORR_reward= -ORR_reward*10-ORR_KL+2.5
+
                 # 将 ORR 奖励加到基础奖励上
                 reward+= ORR_reward*args.ORR_reward_effi
-                
+
                 # 如果只使用 ORR 奖励
                 if args.only_ORR:
                     reward= ORR_reward*args.ORR_reward_effi
 
-
-
-            #print(0)
+            # print(0)
             # 奖励归一化/缩放
             if args.return_scale:
                 reward/=record_return
@@ -1070,7 +1208,7 @@ def test(env, agent , writer=None,args=None,device='cpu'):
 
             # 处理下一状态
             next_state=agent.process_state(next_states_node,T+1)  # state dim= (grid_num, 119)
-            
+
             # 处理下一订单状态
             next_order,next_order_mask=agent.process_order(next_order_states, T+1)
             next_order=agent.remove_order_grid(next_order)
@@ -1099,8 +1237,8 @@ def test(env, agent , writer=None,args=None,device='cpu'):
                 #agent.update(device,writer)
             '''
 
-            #t3=time.time()
-            #print(t1-t0,t2-t0,t3-t0)
+            # t3=time.time()
+            # print(t1-t0,t2-t0,t3-t0)
 
             # 更新状态变量为下一状态
             states_node=next_states_node
@@ -1139,10 +1277,14 @@ def test(env, agent , writer=None,args=None,device='cpu'):
             best_gmv=np.sum(gmv)
             best_orr=order_response_rates[-1]
         
+        # 记录当前迭代的 ORR 和 GMV
+        all_orr_records.append(order_response_rates[-1])
+        all_gmv_records.append(np.sum(gmv))
+
         # 打印测试结果
         print('>>> Time: [{0:<.4f}] Mean_ORR: [{1:<.4f}] GMV: [{2:<.4f}] Best_ORR: [{3:<.4f}] Best_GMV: [{4:<.4f}]'.format(
             t_end-t_begin,order_response_rates[-1], np.sum(gmv),best_orr,best_gmv ))
-        
+
         # 使用 Logger.info 记录当前 iter 的统计信息
         Logger.info(f"Round #{iteration} Summary")  # 当前回合总结
         Logger.info(f"  Execution Time: {t_end-t_begin:.4f}s")  # 本回合执行时间（秒），从回合开始到结束的总耗时
@@ -1153,17 +1295,51 @@ def test(env, agent , writer=None,args=None,device='cpu'):
         # Logger.info(f"  Mean Fake ORR: {np.mean(fake_orr):.4f}")  # 平均虚假订单响应率=系统对虚拟订单的响应比例（虚拟订单是系统生成的测试用订单），用于验证系统的鲁棒性和在压力下的表现
         # Logger.info(f"  Mean Fleet ORR: {np.mean(fleet_orr):.4f}")  # 平均车队订单响应率=车队整体完成订单的比例，衡量车队整体服务能力和调度效率
         Logger.info("=" * 50)  # 分隔线，标记回合结束
-        
-        #agent.save_param(args.log_dir,'param')
-        
+
+        # agent.save_param(args.log_dir,'param')
+
         # 保存分布日志
         agent.logs.save_log_distribution('distribution')
+
+        # LLM 增强权重保存 ==================================================
+        # 维护 episode_reward_buffer（仅在 llm_enhance 为 True 时）
+        if args.llm_enhance:
+            Logger.info(f"LLM enhancement LOG")
+            episode_reward_buffer, best_orr_records, best_gmv_records = update_episode_reward_buffer(
+                (iteration-args.TEST_SEED), llm_optimized_weights, order_response_rates, 
+                gmv, episode_reward_buffer, best_orr_records, best_gmv_records)
+            # 权重tensor路径
+            save_weights_path = args.llm_enhance_weight_path + args.llm_enhance_weight_file + time.strftime("%Y%m%d_%H-%M-%S") + '.pkl'
+            # 用LLM优化权重 - 合并历史记录列表（当前记录 + 最佳ORR记录 + 最佳GMV记录）
+            episode_reward_topK = [episode_reward_buffer[-1]] + best_orr_records + best_gmv_records
+            llm_results = call_openai_for_weight_optimization(llm_optimized_weights, max_steps=args.TEST_ITER, step_number=(iteration-args.TEST_SEED), episode_reward_topK=episode_reward_topK)
+            if llm_results and 'suggested_weights' in llm_results:
+                llm_optimized_weights = llm_results['suggested_weights']
+            try:
+                torch.save(llm_optimized_weights, save_weights_path)
+                Logger.info(f"已保存LLM增强权重tensor: {llm_optimized_weights} 到 {save_weights_path}")
+            except Exception as e:
+                Logger.warning(f"[保存] LLM增强权重tensor失败: {e}")
+            try:
+                torch.save(llm_optimized_weights, weights_path)
+                Logger.info(f"已更新LLM增强权重tensor: {llm_optimized_weights} 到 {weights_path}")
+            except Exception as e:
+                Logger.warning(f"[更新] LLM增强权重tensor失败: {e}")
+        # ====================================================================
         
-        # 注释掉的代码：测试模式不记录 TensorBoard 指标
-        #writer.add_scalar('train ORR',order_response_rates[-1],iteration)
-        #writer.add_scalar('train GMV',np.sum(gmv),iteration)
-        #writer.add_scalar('train KL',np.mean(kl),iteration)
-        #writer.add_scalar('train Suply/demand',np.mean(entropy),iteration)
+        Logger.info("=" * 50)  # 分隔线，标记测试回合结束
+        Logger.info(f"TEST ROUND #{iteration} END")  # 当前测试回合编号
+        Logger.info("=" * 50)  # 分隔线
+    Logger.info("=" * 50)  # 分隔线
+    Logger.info(f"ALL TESTS COMPLETED")  # 所有测试回合完成提示
+    Logger.info("=" * 50)  # 分隔线
+    
+    # 打印所有迭代的 ORR 和 GMV 记录
+    Logger.info(f"ALL TESTS RECORDS (Total {len(all_orr_records)} iterations)")
+    Logger.info("=" * 50)
+    for i, (orr, gmv) in enumerate(zip(all_orr_records, all_gmv_records)):
+        Logger.info(f"Iteration #{i+args.TEST_SEED}: ORR = {orr:.4f}, GMV = {gmv:.2f}")
+    Logger.info("=" * 50)
 
 
 if __name__ == "__main__":
