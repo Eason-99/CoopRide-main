@@ -1644,4 +1644,5 @@ class CityReal:
         if mode=='SEQ':
             next_states_node = self.step_get_node_observation()
             return next_states_node
-        return np.array(serve_driver_id, dtype=np.int32)[:, 1], next_states_node, next_states, order_states, order_idx, order_feature, global_orders_states
+        return "test"
+        # return np.array(serve_driver_id, dtype=np.int32)[:, 1], next_states_node, next_states, order_states, order_idx, order_feature, global_orders_states

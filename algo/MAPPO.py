@@ -10,7 +10,7 @@ from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 from torch import distributions as pyd, float32
 from algo.utils.valuenorm import ValueNorm
 from algo.utils.layers import GraphAttentionLayer, GraphConvolutionLayer , DCGRUCell
-#from algo.utils.GNN import GraphConvolution
+# from algo.utils.GNN import GraphConvolution
 from copy import deepcopy
 from collections import namedtuple
 import math
@@ -239,7 +239,7 @@ class DGCNLayer(nn.Module):
         x =  self.fc(x) 
         return x
 
-    
+
 class GCNLayer(nn.Module):
     def __init__(self, input_dim, hidden_dim ,output_dim, activate_fun=F.relu , gain=1 ,init=True):
         super(GCNLayer, self).__init__()
@@ -271,7 +271,7 @@ class GCNLayer(nn.Module):
                 loss += p.pow(2).sum()
 
         return loss
-    
+
 
 class NeighborLayer(nn.Module):
     def __init__(self, input_dim, output_dim, activate_fun=F.relu , gain=1 , init=True):
@@ -742,7 +742,7 @@ class MdpAgent(object):
             MDP_param=pickle.load(f)
         self.value_state= MDP_param['value']
         self.n_state = MDP_param['num']
-                
+
 
 class DeepMdpAgent(nn.Module):
     def __init__(self,grid_dim,time_dim,embedding_dim , driver_num,init=True,  activate_fun='relu'):
@@ -976,7 +976,6 @@ class PPO:
         if self.meta_choose==0:
             self.meta_scope=0
 
-
         # optimizers
         if self.use_mdp==0:
             self.MDP = None
@@ -1074,14 +1073,13 @@ class PPO:
             self.meta_optimizer = None
             self.critic_global_optimizer = None
 
-
         if self.use_valuenorm:
             self.value_local_normalizer = ValueNorm(self.meta_scope+1).to(self.device)
             self.value_global_normalizer = ValueNorm(1).to(self.device)
         else:
             self.value_local_normalizer = None
             self.value_global_normalizer = None
-        
+
         self.buffer= Replay_buffer(args.memory_size, self.state_dim, self.order_dim ,self.action_dim, self.hidden_dim,
                             self.max_order_num, self.agent_num, self.gamma, self.lam,
                             adv_normal = self.adv_normal, 
@@ -1096,7 +1094,7 @@ class PPO:
                             args = args)
 
         self.neighbor_num=None
-    
+
         if self.feature_normal==3:
             self.feature_scope = self.load_feature_scope()
 
@@ -1136,7 +1134,7 @@ class PPO:
         #     state['actor net'] = change_weight(state['actor net'])
         # except Exception as e:
         #     print(f"Error in changing weight: {e}")
-        
+
         self.actor.load_state_dict(state['actor net'])
         self.critic.load_state_dict(state['critic net'])
 
@@ -1169,7 +1167,7 @@ class PPO:
         d_inv_sqrt[rowsum==0] = 0.
         normalize_adj = d_inv_sqrt*adj*(d_inv_sqrt.T)
         return normalize_adj
-            
+
     def compute_edge_tensor(self):
         if self.env.order_param is not None:
             adj = torch.from_numpy( self.env.order_param.sum(-1) ).float()
@@ -1178,7 +1176,7 @@ class PPO:
             neighbors = [node.layers_neighbors_id for node in self.env.nodes]
             adj= torch.zeros((self.agent_num,self.agent_num),dtype=torch.float32)
             for i in range(self.agent_num):
-                #adj[i,i]=1
+                # adj[i,i]=1
                 for k in range(self.env.l_max):
                     index= adj[i]>0
                     adj[i][index] = adj[i][index]+self.env.order_time_dist[k]
@@ -1192,7 +1190,6 @@ class PPO:
             adj = adj*order_num[:,None]
             adj[adj<0.05]=0
         return adj.to(self.device)
-
 
     def compute_neighbor_tensor(self):
         neighbors = [node.layers_neighbors_id for node in self.env.nodes]
@@ -1230,7 +1227,6 @@ class PPO:
         feature/= feature_max
         feature = (feature-0.5)*2
         return feature
-
 
     def process_state(self,s, t):
         s=np.stack(s,axis=0)
@@ -1340,9 +1336,9 @@ class PPO:
             self.MDP.memory_info(mdp_state[:,:2], target_value)
             order_state[:,-1] = adv
             return order_state
-        
+
     def process_order(self,order_state, t):
-        #[begin node, end node, price, duration ,service type, entropy]
+        # [begin node, end node, price, duration ,service type, entropy]
         order_num = []
         trimmed_state = []
         for i in range(len(order_state)):
@@ -1351,16 +1347,16 @@ class PPO:
                 cur_state = cur_state[:self.max_order_num]
             trimmed_state.append(cur_state)
             order_num.append(len(cur_state))
-        #order_dim_origin= self.order_dim-2 if self.new_order_entropy else self.order_dim
+        # order_dim_origin= self.order_dim-2 if self.new_order_entropy else self.order_dim
         if self.use_mdp:
             order_dim_origin = 7
         else:
             order_dim_origin = 6
         order=torch.zeros((self.agent_num,self.max_order_num,order_dim_origin),dtype=float32)
         mask=torch.zeros((self.agent_num,self.max_order_num),dtype=torch.bool)
-        #if self.use_mdp:
+        # if self.use_mdp:
         #    order_dim_state = order_dim_origin-1
-        #else:
+        # else:
         #    order_dim_state = order_dim_origin
         for i in range(len(trimmed_state)):
             order[i,:order_num[i], :7]= torch.Tensor(trimmed_state[i])
@@ -1396,7 +1392,24 @@ class PPO:
         action = np.clip(action, low, high)
         return action
 
-    def action(self, state,order, state_rnn_actor, state_rnn_critic ,mask,order_idx ,device='cpu', random_action=False ,sample=True, MDP=None,need_full_prob=False, FM_mode='local', llm_enhance=False, llm_optimized_weights=None):
+    def action(
+        self,
+        state,
+        order,
+        state_rnn_actor,
+        state_rnn_critic,
+        mask,
+        order_idx,
+        device="cpu",
+        random_action=False,
+        sample=True,
+        MDP=None,
+        need_full_prob=False,
+        FM_mode="local",
+        llm_enhance=False,
+        llm_only=False,
+        llm_optimized_weights=None,
+    ):
         """
         Compute current action for all grids give states
         
@@ -1453,7 +1466,7 @@ class PPO:
 
         # ========== 初始化阶段 ==========
         mask=mask.bool()  # 确保mask是bool类型
-        
+
         # 随机动作模式（主要用于测试或探索）
         if random_action:
             # 生成随机动作，范围在[-1, 1]之间均匀分布
@@ -1469,32 +1482,36 @@ class PPO:
                 value_local, state_rnn_critic = self.critic(state, self.adj , state_rnn_critic.to(device))
                 # Critic网络：计算全局价值函数
                 value_global, state_rnn_critic = self.critic.get_global_value(state, self.adj , state_rnn_critic.to(device))
-                
+
                 # ==========================================================
                 # [LLM Mod] 开始：注入混合残差控制
                 # ==========================================================
                 if llm_enhance:
                     # A. 调用 LLM 修正项计算函数 (确保在同一 device 上计算)
                     llm_correction = compute_llm_correction(llm_optimized_weights, state, order.to(device), mask.to(device), device=device)
-                    
+
                     # B. 定义混合系数 Lambda (可以是固定超参，也可以是 LLM 输出的动态值)
                     # 建议先设为 1.0 或 0.5 进行测试
                     lambda_coef = 1.0 
-                    
+
                     # C. 执行残差叠加: Final_Logits = NN_Logits + Lambda * LLM_Logits
                     # 这一步直接修改了相似度分数，改变了后续的概率分布
                     logits = logits + lambda_coef * llm_correction
-                
+                    
+                    if llm_only:
+                        # 如果只使用 LLM 输出，则完全替换原始 logits
+                        logits = lambda_coef * llm_correction
+
                 # ==========================================================
                 # [LLM Mod] 结束
                 # ==========================================================
-        
+
         # ========== 将结果移到CPU ==========
         logits=logits.cpu()  # 策略logits移到CPU
-        #logits=torch.exp(logits)
+        # logits=torch.exp(logits)
         value_local=value_local.cpu()  # 本地价值移到CPU
         value_global = value_global.cpu()  # 全局价值移到CPU
-        
+
         # ========== 初始化动作和相关变量 ==========
         action=torch.zeros((self.agent_num,self.max_order_num),dtype=torch.float32)  # 动作向量
         mask_order= torch.zeros((mask.shape[0],mask.shape[1],mask.shape[1]),dtype=torch.bool)  # 订单掩码（三维）
@@ -1505,7 +1522,7 @@ class PPO:
         mask_agent=torch.ones((self.agent_num,),dtype=torch.bool)  # 智能体掩码（哪些智能体参与训练）
         action_ids=[]  # 实际选择的订单ID列表
         selected_idx=[]  # 选择索引列表（用于MDP学习）
-        
+
         # ========== 订单响应率（ORR）自适应调整 ==========
         high_ratio = self.high_value_ratio  # 初始化高价值比例
         # 如果设置了最小ORR阈值，检查当前ORR是否低于阈值
@@ -1537,8 +1554,8 @@ class PPO:
                 driver_num = self.env.nodes[i].idle_driver_num  # 当前网格的空闲司机数量
                 driver_num = min(driver_num,max_driver_num)  # 不超过最大限制
                 driver_record[i]=driver_num  # 记录实际分配的司机数量
-                #fake_num= self.env.nodes[i].fleet_order_num+1       # 假订单数量（车队订单+1个留本地选项）
-                #real_num= self.env.nodes[i].real_order_num  # 真实订单数量
+                # fake_num= self.env.nodes[i].fleet_order_num+1       # 假订单数量（车队订单+1个留本地选项）
+                # real_num= self.env.nodes[i].real_order_num  # 真实订单数量
 
                 if driver_num==0 or len(order_idx[i])==1:  # 没有司机或只有假订单
                     choose=[0]  # 选择留本地（索引0）
@@ -1549,11 +1566,11 @@ class PPO:
                     prob = F.softmax(logit, dim=-1)  # 计算概率分布
                     mask_d= mask[i].clone()  # 动态掩码，用于标记已选择的订单
                     mask_entropy[i,0]=1  # 标记需要计算熵的订单（假订单）
-                    
+
                     # 为每个司机选择订单
                     for d in range(driver_num):
                         mask_order[i,d]=mask_d  # 记录当前司机可选订单的掩码
-                        
+
                         # 根据sample参数决定采样方式
                         if sample:
                             # 采样模式：根据概率分布随机采样
@@ -1561,23 +1578,23 @@ class PPO:
                         else:
                             # 贪婪模式：选择概率最大的订单
                             choose.append(torch.argmax(prob))
-    
+
                         mask_action[i,d]=1  # 标记该司机有有效动作
                         oldp[i,d]=prob[choose[-1]]  # 记录旧概率，用于PPO更新
-                        
+
                         # 如果选择的不是假订单（索引>0），则从候选池中移除
                         if choose[-1]>0:
                             mask_d[choose[-1]]=0  # 将该订单设为不可选
                             logit[choose[-1]]= -math.inf  # 将logit设为负无穷
                             prob = F.softmax(logit, dim=-1)  # 重新计算概率分布
-                        
+
                         # 如果假订单概率为1，说明没有其他可选订单，提前结束
                         if prob[0]==1 :
                             break
-                            
+
                 action[i,:len(choose)] = torch.Tensor(choose)  # 设置动作向量
                 action_ids.append([ order_idx[i][idx]  for idx in choose])  # 记录实际选择的订单ID
-                
+
                 # 构建选择索引（用于MDP学习）
                 select=[]   # 给MDP学的选择索引
                 if driver_num==0:
@@ -1738,7 +1755,6 @@ class PPO:
                     loss += (param**2).sum()/2
         return loss
 
-
     def add_L1_loss(self, model, l1_alpha):
         l1_loss = []
         for name, param in model.named_parameters():
@@ -1752,7 +1768,7 @@ class PPO:
             if 'weight' in name:
                 l1_loss.append((param**2).sum()/2)
         return l1_alpha*sum(l1_loss)
-            
+
     def split_batch(self,index,data,device='cpu'):
         batch={}
         for key,value in data.items():
@@ -1804,7 +1820,7 @@ class PPO:
         data['adv_global'] = normalize(data['adv_global'], self.adv_normal)
         data['phi'] = phi
         return data
-        
+
     def update(self, device='cpu',writer=None):
         if self.use_lr_anneal:
             update_linear_schedule(self.actor_optimizer, self.step, self.total_steps, self.actor_lr)
@@ -1830,9 +1846,8 @@ class PPO:
             data['adv_coop_mean'] = data['adv_coop'].mean().detach()
             data['adv_coop_std'] = data['adv_coop'].std().detach()
             data['adv_coop'] = normalize(data['adv_coop'], self.adv_normal)
-            #if self.actor_decen:
+            # if self.actor_decen:
             #    data['adv_coop'] = data['adv_coop'].reshape((-1,1))
-
 
         # Train policy with multiple steps of gradient descent
         data_actor={
@@ -1867,7 +1882,7 @@ class PPO:
             for index in BatchSampler(SubsetRandomSampler(range(data_size)), batch_size, True):
                 record_KL=[]
                 for _ in range(thread):
-                    #self.actor_optimizer.zero_grad()
+                    # self.actor_optimizer.zero_grad()
                     loss_actor, actor_info = self.compute_loss_actor(self.split_batch(index,data_actor))
                     kl = actor_info['kl']
                     loss_actor/=(batch_num*thread)
@@ -1880,19 +1895,18 @@ class PPO:
                     record_ratio_max.append(actor_info['ratio_max'])
                     record_ratio_mean.append(actor_info['ratio_mean'])
                     record_actor_auxi_loss.append( actor_info['auxi_loss'] )
-                    #loss_iter+=loss_actor
+                    # loss_iter+=loss_actor
                 if (cnt+1)%batch_num==0:
                     if np.mean(record_KL)<-0.01:
                         self.actor_optimizer.zero_grad()   
-                        #continue
+                        # continue
                     else:
                         nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
                         self.actor_optimizer.step()
                         self.actor_optimizer.zero_grad()              
                 cnt+=1
-            #if np.mean(record_KL)<-0.01:
-                #break
-
+            # if np.mean(record_KL)<-0.01:
+            # break
 
         # Value function learning
         data_critic_local={
@@ -1925,9 +1939,9 @@ class PPO:
                         record_return_local.append(critic_info['ret'])
                     record_critic_local_loss.append(loss_critic.item())
                     record_critic_auxi_loss.append( critic_info['auxi_loss'] )
-                #mpi_avg_grads(ac.v)    # average grads across MPI processes
+                # mpi_avg_grads(ac.v)    # average grads across MPI processes
                 if (cnt+1)%batch_num==0:
-                    #nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm, norm_type=2)
+                    # nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm, norm_type=2)
                     nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
                     self.critic_optimizer.step()
                     self.critic_optimizer.zero_grad()
@@ -1941,15 +1955,14 @@ class PPO:
             record_critic_global_loss_origin, record_return_global = 0,0
             record_phi_loss_origin, record_phi_loss = 0,0
 
-
         writer.add_scalar('train actor loss', np.mean(record_actor_loss_origin), global_step=self.step)
         writer.add_scalar('train critic local loss', np.mean(record_critic_local_loss_origin), global_step=self.step)
         writer.add_scalar('train critic global loss', np.mean(record_critic_global_loss_origin), global_step=self.step)
         writer.add_scalar('train phi loss', np.mean(record_phi_loss_origin), global_step=self.step)
         writer.add_scalar('train entropy', np.mean(record_entropy), global_step=self.step)
         writer.add_scalar('train kl', np.mean(record_KL), global_step=self.step)
-        #writer.add_scalar('train delta actor loss', np.mean(record_actor_loss)-np.mean(record_actor_loss_origin), global_step=self.step)
-        #writer.add_scalar('train delta critic loss', np.mean(record_critic_loss)-np.mean(record_critic_loss_origin), global_step=self.step)
+        # writer.add_scalar('train delta actor loss', np.mean(record_actor_loss)-np.mean(record_actor_loss_origin), global_step=self.step)
+        # writer.add_scalar('train delta critic loss', np.mean(record_critic_loss)-np.mean(record_critic_loss_origin), global_step=self.step)
         writer.add_scalar('train ratio max', np.mean(record_ratio_max) , global_step=self.step)
         writer.add_scalar('train ratio mean', np.mean(record_ratio_mean) , global_step=self.step)
         writer.add_scalar('train adv mean', data['adv_coop_mean'].mean() , global_step=self.step)
@@ -1988,10 +2001,10 @@ class PPO:
                         record_critic_global_loss_origin.append(loss_critic.item())
                         record_return_global.append(critic_info['ret'])
                     record_critic_global_loss.append(loss_critic.item())
-                    #record_critic_auxi_loss.append( critic_info['auxi_loss'] )
-                #mpi_avg_grads(ac.v)    # average grads across MPI processes
+                    # record_critic_auxi_loss.append( critic_info['auxi_loss'] )
+                # mpi_avg_grads(ac.v)    # average grads across MPI processes
                 if (cnt+1)%batch_num==0:
-                    #nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm, norm_type=2)
+                    # nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm, norm_type=2)
                     nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
                     self.critic_global_optimizer.step()
                     self.critic_global_optimizer.zero_grad()
@@ -2028,14 +2041,14 @@ class PPO:
                 for _ in range(thread):
                     loss_phi = self.compute_loss_phi(self.split_batch(index,data_phi))
                     loss_phi/=(batch_num*thread)
-                    #loss_phi.backward(retain_graph=True)
+                    # loss_phi.backward(retain_graph=True)
                     loss_phi.backward()
                     if iter==0:
                         record_phi_loss_origin.append(loss_phi.item())
                     record_phi_loss.append(loss_phi.item())
-                #mpi_avg_grads(ac.v)    # average grads across MPI processes
+                # mpi_avg_grads(ac.v)    # average grads across MPI processes
                 if (cnt+1)%batch_num==0:
-                    #nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm, norm_type=2)
+                    # nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm, norm_type=2)
                     self.meta_optimizer.step()
                     self.meta_optimizer.zero_grad()
                 cnt+=1
@@ -2052,10 +2065,10 @@ class PPO:
         ratio = newp/oldp
         ratio[~mask_action]=0
         if self.clip:
-            # adv_global [batch,1] -> [batch,1,1] 
+            # adv_global [batch,1] -> [batch,1,1]
             # ratio [batch, agent num, order num]
             clip_adv = torch.clamp(ratio, 1-self.clip_ratio, 1+self.clip_ratio) * adv_global[:,:,None]
-            #clip_adv=ratio*advantage
+            # clip_adv=ratio*advantage
             loss_term1= -(torch.min(ratio * adv_global[:,:,None], clip_adv))
             loss_term1[~mask_action]=0
             loss_term1 = (torch.sum(loss_term1,dim=-1)/torch.sum(mask_action,dim=-1))[mask_agent].mean()
@@ -2131,11 +2144,11 @@ class PPO:
             else:
                 loss_pi = -(ratio * advantage)[mask_agent].mean()
         elif self.grad_multi=='mean':
-            #ratio=torch.sum(ratio,dim=1,keepdim=True)/torch.sum(mask_action,dim=1,keepdim=True)
+            # ratio=torch.sum(ratio,dim=1,keepdim=True)/torch.sum(mask_action,dim=1,keepdim=True)
             if self.clip:
                 # advantage shape[batch, agent num, 1]
                 clip_adv = torch.clamp(ratio, 1-self.clip_ratio, 1+self.clip_ratio) * advantage
-                #clip_adv=ratio*advantage
+                # clip_adv=ratio*advantage
                 loss_pi= -(torch.min(ratio * advantage, clip_adv))
                 loss_pi[~mask_action]=0
                 denom = torch.sum(mask_action,dim=-1,keepdim=True).clamp(min=1)
@@ -2145,11 +2158,11 @@ class PPO:
                 denom = torch.sum(mask_action,dim=1,keepdim=True).clamp(min=1)
                 ratio=torch.sum(ratio,dim=1,keepdim=True)/denom
                 loss_pi = -(ratio * advantage)[mask_agent].mean()
-        #ent= -torch.sum((probs[:,0]+1e-12)*torch.log(probs[:,0]+1e-12),dim=1)
+        # ent= -torch.sum((probs[:,0]+1e-12)*torch.log(probs[:,0]+1e-12),dim=1)
         ent= -torch.sum((probs[mask_entropy]+1e-12)*torch.log(probs[mask_entropy]+1e-12),dim=-1)
-        #ent[~mask_action[:,0]]=0
+        # ent[~mask_action[:,0]]=0
         ent= ent.mean()
-        #ent=  -torch.sum((probs[:,:,0]+1e-12)*torch.log(probs[:,:,0]+1e-12),dim=1)[mask_agent].mean()
+        # ent=  -torch.sum((probs[:,:,0]+1e-12)*torch.log(probs[:,:,0]+1e-12),dim=1)[mask_agent].mean()
         loss_pi-= self.ent_factor*ent
         if self.use_auxi:
             auxi_loss = self.compute_loss_auxi(self.actor, state, next_state)
@@ -2160,15 +2173,15 @@ class PPO:
             loss_pi+=  self.regularize_alpha * self.compute_regularize(self.actor)
         if self.use_fake_auxi>0:
             loss_pi += self.auxi_effi*self.compute_fake_loss(self.actor, state, next_state)
-              
+
         # Useful extra info
         approx_kl = torch.log(ratio[mask_agent]).mean().item()
-        #approx_kl=0
+        # approx_kl=0
         entropy=  ent.item()
-        #ratio_max= torch.max(torch.abs(ratio.detach())).item()
-        #entropy = pi.entropy().mean().item()
-        #clipped = ratio.gt(1+clip_ratio) | ratio.lt(1-clip_ratio)
-        #clipfrac = torch.as_tensor(clipped, dtype=torch.float32).mean().item()
+        # ratio_max= torch.max(torch.abs(ratio.detach())).item()
+        # entropy = pi.entropy().mean().item()
+        # clipped = ratio.gt(1+clip_ratio) | ratio.lt(1-clip_ratio)
+        # clipfrac = torch.as_tensor(clipped, dtype=torch.float32).mean().item()
         pi_info = dict(kl=approx_kl, auxi_loss=auxi_loss.item() ,entropy=entropy, ratio_max=ratio_max, ratio_mean=ratio_mean)
         return loss_pi, pi_info
 
@@ -2218,8 +2231,7 @@ class PPO:
         elif self.use_fake_auxi == 8:
             fake_loss = -torch.abs(d)
         return fake_loss.mean()
-        
-    
+
     def compute_loss_critic(self,data, critic_fun,value_normalizer):
         state, next_state, ret, old_value, hidden_rnn_critic = data['state'], data['next_state'] ,data['ret'], data['value'], data['state_rnn']
         critic_info = dict(ret=ret.mean().item())
@@ -2504,7 +2516,6 @@ class Replay_buffer():
             self.ptr=0
             self.path_start_idx=0
         return data
-
 
 
 if __name__ == "__main__":

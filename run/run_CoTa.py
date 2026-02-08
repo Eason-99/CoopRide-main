@@ -87,8 +87,15 @@ def get_parameter():
     args= parser.parse_args()
     # ========== ！！！！！ProPS参数！！！！！ ==========
     args.llm_enhance = True
-    args.llm_enhance_weight_path = '../z_wyc_add/llm_enhance_weight/'
+    args.llm_only = False
+    args.llm_enhance_weight_path = '../z_wyc_add/llm_enhance_weight/' + time.strftime("%Y%m%d_%H-%M-%S") + '/'
     args.llm_enhance_weight_file = 'LLM_Optimized_Weights'
+    
+    # 匹配模式：
+    # 'local': 本地匹配
+    # 'RLmerge': RL 合并匹配（车队可以调度）
+    # 'RLsplit': RL 分离匹配
+    args.FM_mode = ['local','RLmerge','RLsplit' ][0]
 
     # ========== 基础训练参数 ==========
     # 最大迭代次数
@@ -97,7 +104,8 @@ def get_parameter():
     # ========== 测试相关参数 ==========
     # 测试基准目录路径（公共前缀）
     # test_base_dir = '../logs/synthetic/grid143/EnvStat326_OD143_FMRLmerge_Batch1000_Gamma0.97_Lambda0.95_Iter1_Ir0.001_Step144_Ent0.005_Minibatch5_Parallel5mix_MDP0_StateEmb2_Meta0global_DGCNAC_relufeaNor1_20260103_02-57'
-    test_base_dir = '../z_wyc_add/ckpts/test001'
+    test_base_dir = '../z_wyc_add/ckpts/test143'
+    # test_base_dir = '../z_wyc_add/ckpts/test121'
     
     # 测试日志目录（仅用于查看）
     args.test_dir = test_base_dir
@@ -110,7 +118,7 @@ def get_parameter():
     args.test = True
     
     # 测试迭代次数
-    args.TEST_ITER=2
+    args.TEST_ITER=10
     
     # 测试随机种子（保证测试可重复）
     args.TEST_SEED = 1314520
@@ -322,7 +330,7 @@ def get_parameter():
     # 'local': 本地匹配
     # 'RLmerge': RL 合并匹配（车队可以调度）
     # 'RLsplit': RL 分离匹配
-    args.FM_mode = ['local','RLmerge','RLsplit' ][0]
+    # args.FM_mode = ['local','RLmerge','RLsplit' ][0]
     
     # 是否移除虚假订单
     args.remove_fake_order=False
@@ -783,6 +791,13 @@ def log_test_info(args):
     Logger.info("TEST EXECUTION INFO")  # 测试信息标题
     Logger.info("=" * 60)  # 分隔线
     
+    Logger.info("-" * 50)  # 分隔线
+    Logger.info(f"Test Iterations: {args.TEST_ITER}")  # 测试迭代次数，决定运行多少个测试回合
+    Logger.info(f"FM Mode: {args.FM_mode}")  # 是否开启重定位
+    Logger.info(f"LLM Enhance: {args.llm_enhance}")  # 是否使用LLM增强
+    Logger.info(f"LLM Only: {args.llm_only}")  # 是否只使用LLM输出
+    Logger.info("-" * 50)  # 分隔线
+    
     # 执行模式
     mode = "TEST" if args.test else "TRAIN"
     Logger.info(f"Execution Mode: {mode}")  # 当前执行模式：TEST为测试模式，TRAIN为训练模式
@@ -796,7 +811,6 @@ def log_test_info(args):
         Logger.info(f"Environment Seed: {args.env_seed}")  # 静态环境的随机种子，用于保证场景可重现（不同网格使用不同固定种子）
     
     # 测试相关参数
-    Logger.info(f"Test Iterations: {args.TEST_ITER}")  # 测试迭代次数，决定运行多少个测试回合
     Logger.info(f"Test Seed: {args.TEST_SEED}")  # 测试随机种子，用于保证测试结果可重复
     Logger.info(f"Model Path: {args.model_dir}")  # 预训练模型权重文件的路径
     
@@ -1039,6 +1053,11 @@ def test(env, agent , writer=None,args=None,device='cpu'):
         if args.llm_enhance:
             Logger.info("LLM enhancement is enabled.")
 
+            # 创建权重目录（如果不存在）
+            if not os.path.exists(args.llm_enhance_weight_path):
+                os.makedirs(args.llm_enhance_weight_path, exist_ok=True)
+                Logger.info(f"已创建权重目录: {args.llm_enhance_weight_path}")
+
             # 权重tensor路径
             weights_path = args.llm_enhance_weight_path + args.llm_enhance_weight_file + '.pkl'
 
@@ -1102,6 +1121,7 @@ def test(env, agent , writer=None,args=None,device='cpu'):
                 random_action=False,
                 FM_mode=args.FM_mode,
                 llm_enhance=args.llm_enhance,
+                llm_only=args.llm_only,
                 llm_optimized_weights=llm_optimized_weights,
             )
 

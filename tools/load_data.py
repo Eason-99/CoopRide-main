@@ -109,74 +109,126 @@ def load_envs_DiDi121(driver_num=2000):
 
 
 def load_envs_NYU143(driver_num=2000):
+    """
+    加载 NYU 143 网格数据集并创建仿真环境
+    
+    数据处理流程说明：
+    1. 数据加载：从 pickle 文件加载包含价格、邻居关系、订单分布等信息的参数
+    2. 订单处理：对原始订单数据进行多步调整，包括数量压缩、随机增删、邻居相关扰动等
+    3. 司机初始化：根据订单量分布初始化司机位置，并随机调整至指定总数
+    4. 环境构建：将处理后的数据封装为 CityReal 仿真环境对象
+    
+    Args:
+        driver_num: 初始司机数量，默认为 2000
+        
+    Returns:
+        env: CityReal 仿真环境对象
+        M: 网格行数
+        N: 网格列数
+        None: 保留字段（未使用）
+        M*N: 网格总数
+    """
     data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
     primary_path = os.path.join(data_dir, "NYU", "NYU_grid143.pkl")
     fallback_path = os.path.join(data_dir, "NYU_grid143.pkl")
     data_path = primary_path if os.path.exists(primary_path) else fallback_path
     with open(data_path, 'rb') as handle:
         data_param = pickle.load(handle) 
-    price_param = data_param['price']   # 每级邻居的价格    第0级表示自己网格 0~l_max
-    neighbor = data_param['neighbor']    # neighbor>=100 表示不可达的订单
-    order_param = data_param['order']   # shape=(11,11,144)  表示 (出发地，目的地，出发时间)
-    M,N = data_param['shape']
-    l_max = 6   # 最大通勤跨邻居数
-    # 减小order param 数量
-    np.random.seed(0)
-    commute1 = order_param.astype(np.float32)
+    # 从数据文件中提取关键参数
+    price_param = data_param['price']       # 每级邻居的价格，第0级表示自己网格，范围 0~l_max
+    neighbor = data_param['neighbor']        # 邻居距离矩阵，>=100 表示不可达的订单
+    order_param = data_param['order']       # 订单分布矩阵，shape=(出发地, 目的地, 出发时间)
+    M,N = data_param['shape']                # 网格尺寸：M行N列
+    l_max = 6                                # 最大通勤跨邻居级数
+    
+    # ========== 步骤1：减小订单参数数量 ==========
+    np.random.seed(0)                         # 固定随机种子保证可复现
+    commute1 = order_param.astype(np.float32) # 转换为浮点类型便于处理
+    
+    # 将不可达网格的订单清零（neighbor==0 表示同一网格内的订单不处理）
     commute1[(neighbor==0)] = 0
+    
+    # 对大订单数量进行压缩（大于等于3的订单）
     index = commute1>=3
-    commute1[index] = (commute1[index]-3)*0.2+3
+    commute1[index] = (commute1[index]-3)*0.2+3  # 使用0.2系数压缩，保持基数为3
+    
+    # 对中等订单数量进行压缩（大于等于2的订单）
     index = commute1>=2
-    commute1 = np.round(commute1/2+0.1)
+    commute1 = np.round(commute1/2+0.1)         # 除以2后四舍五入
+    
+    # 将完全不可达的订单清零（neighbor>=100）
     commute1[neighbor==100]=0
+    # 随机删除部分订单（0-2个），但保留订单总量较少的区域（<3000）
     random_delete = np.random.randint(0,3,(commute1.shape))
-    random_delete[commute1.sum(-1).sum(-1)<3000] = 0
+    random_delete[commute1.sum(-1).sum(-1)<3000] = 0  # 订单总量少的区域不删除
     commute1 = commute1-random_delete
-    commute1[commute1<0] = 0
+    commute1[commute1<0] = 0  # 防止订单数为负
+    
+    # 针对网格68进行额外的随机删除（0-1个）
     random_delete = np.random.randint(0,2,(commute1.shape[1],commute1.shape[2]))
     commute1[68]-=random_delete
-    commute1[commute1<0] = 0
-    # 添加与邻居相关的随机数据
+    commute1[commute1<0] = 0  # 防止订单数为负
+    # ========== 步骤2：添加与邻居相关的随机订单数据 ==========
+    
+    # 为每个网格随机生成1-5个额外订单
     random_grid_num = np.random.randint(1,6,M*N)
+    
+    # 构建基于邻居距离的概率分布矩阵
     random_prob = np.zeros((M*N,M*N))
-    prob_list = [0.05,0.2,0.4,0.15,0.1,0.05,0.05]
+    prob_list = [0.05,0.2,0.4,0.15,0.1,0.05,0.05]  # 不同邻居级别的权重（0-6级）
     for k in range(7):
         index= neighbor==k
+        # 将权重归一化后分配给对应邻居级别的网格
         random_prob+= prob_list[k]/np.sum(index,axis=-1,keepdims=True)*index
+    
+    # 根据概率分布生成随机订单
     random_add = np.zeros(commute1.shape)
     for i in range(M*N):
+        # 为网格i在每个时间段随机选择目标网格
         sample = np.random.choice(M*N,size = (random_grid_num[i],commute1.shape[-1]),replace=True, p=random_prob[i])    
         for t in range(commute1.shape[-1]):
-            random_add[i,sample[:,t],t] = 1
+            random_add[i,sample[:,t],t] = 1  # 添加1个订单
     commute1+=random_add
-    # 删除数量多的
+    # ========== 步骤3：删除订单数量较多的区域 ==========
+    
     random_delete = np.random.randint(0,2,(commute1.shape))
-    #random_delete[random_delete<=1] = 0
+    # 找出总订单量<=25的网格（订单较少），不对这些网格进行随机删除
     index = commute1.sum(1)<=25
-    random_delete = random_delete.swapaxes(1,2)
-    random_delete[index] = 0
-    random_delete = random_delete.swapaxes(1,2)
+    random_delete = random_delete.swapaxes(1,2)   # 交换轴以应用索引
+    random_delete[index] = 0                      # 订单少的网格不删除
+    random_delete = random_delete.swapaxes(1,2)  # 恢复原始轴顺序
     commute1 = commute1-random_delete
     commute1[commute1<0] = 0
-    # 全部删除一点点
+    
+    # ========== 步骤4：全局少量删除订单（约20%概率）==========
     random_delete = np.random.randint(0,5,(commute1.shape))
-    random_delete[random_delete<=3] = 0
-    random_delete[random_delete>3] = 1
+    random_delete[random_delete<=3] = 0   # 0-3不删除
+    random_delete[random_delete>3] = 1    # 4才删除，即约20%删除率
     commute1 = commute1-random_delete
     commute1[commute1<0] = 0
+    
+    # 转换回整数类型
     order_param = commute1.astype(np.int32)
-    # 初始化司机数量
+    # ========== 步骤5：初始化司机数量 ==========
+    
+    # 初始均匀分配：每个网格1个司机
     driver_param=np.ones(M*N,dtype=np.int32)
+    
+    # 按比例缩放至目标司机总数
     driver_param = driver_param*driver_num/np.sum(driver_param)
     driver_param = driver_param.astype(np.int32)
+    
+    # 处理四舍五入后的余数，随机分配到某些网格
     random_add = np.random.choice(M*N, driver_num-np.sum(driver_param), replace = True)
     for dri in random_add:
         driver_param[dri] += 1
-    # 统计数量特别多的网格id
+    # ========== 步骤6：统计高订单网格 ==========
+    
+    # 找出在不同时间段订单数>=100的网格
     large_grid_dist={i:0 for i in range(121)}
-    a= np.sum(order_param, axis=1)
+    a= np.sum(order_param, axis=1)  # 按目的地聚合
     for i in range(144):
-        b = np.where(a[:,i]>=100)[0]
+        b = np.where(a[:,i]>=100)[0]  # 查找订单>=100的出发地
         for n in b:
             large_grid_dist[n]+=1
     large_grid=[]
@@ -186,25 +238,54 @@ def load_envs_NYU143(driver_num=2000):
     order_num = order_param.sum()
     print('订单数量: {} , 司机数量: {}'.format( np.sum(order_num), np.sum(driver_param)))
 
-    # 处理为envs的参数
+    # ========== 步骤7：转换为环境所需参数格式 ==========
+    
+    # 创建网格ID映射矩阵
     mapped_matrix_int = np.arange(M*N)
     mapped_matrix_int=np.reshape(mapped_matrix_int,(M,N))
+    
+    # 计算每个网格在每个时间段的订单总数
     order_num = np.sum(order_param, axis=1)
+    
+    # 转换为字典列表格式：[{网格ID: [订单数]}, ...]，每个时间片一个字典
     order_num_dict = []
     for t in range(144):
         order_num_dict.append( {i:[order_num[i,t]] for i in range(M*N)} )
+    # 构建空闲司机位置矩阵：(时间段, 网格)
+    # 假设每个时间段开始时，司机分布相同
     idle_driver_location_mat = np.zeros((144, M*N))
     for t in range(144):
         idle_driver_location_mat[t] = driver_param
+    
+    # 订单时长概率分布（9类），当前未使用
     order_time = [0.2, 0.2, 0.15,       # 没用
                   0.15, 0.1, 0.1,
                   0.05, 0.04, 0.01]
     n_side = 6
+    
+    # 真实订单和上下线司机（当前未使用）
     order_real = []
     onoff_driver_location_mat=[]
-    env = CityReal(mapped_matrix_int, order_num_dict, [], idle_driver_location_mat,
-                   order_time, price_param, l_max, M, N, n_side, 144, 1, np.array(order_real),
-                   np.array(onoff_driver_location_mat), neighbor_dis = neighbor , order_param=order_param ,fleet_help=False)
+    # 创建 CityReal 仿真环境对象
+    env = CityReal(
+        mapped_matrix_int,           # 网格ID映射
+        order_num_dict,              # 订单数量字典
+        [],                          # 真实订单（未使用）
+        idle_driver_location_mat,    # 空闲司机位置矩阵
+        order_time,                  # 订单时长分布
+        price_param,                 # 价格参数
+        l_max,                       # 最大通勤距离
+        M, N,                        # 网格尺寸
+        n_side,                      # 邻居边数
+        144,                         # 时间步数
+        1,                           # 订单概率
+        np.array(order_real),        # 真实订单数组（空）
+        np.array(onoff_driver_location_mat),  # 上下线司机（空）
+        neighbor_dis=neighbor,       # 邻居距离矩阵
+        order_param=order_param,     # 订单参数矩阵
+        fleet_help=False             # 不使用车队帮助
+    )
+    
     return env, M, N, None, M*N
 
 

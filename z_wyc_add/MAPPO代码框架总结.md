@@ -148,6 +148,206 @@ PPO类 (协调器)
     └── Replay_buffer (数据存储)
 ```
 
+```
+【顶层结构】
+
+Checkpoint包含的键:
+
+  ├─ 'step': int (value=0)
+
+  ├─ 'actor net': OrderedDict (state_dict)
+
+  ├─ 'critic net': OrderedDict (state_dict)
+
+  ├─ 'actor optimizer': dict (优化器状态)
+
+  ├─ 'critic optimizer': dict (优化器状态)
+
+
+
+【训练信息】
+
+训练步数: 0
+
+
+
+================================================================================
+
+【Actor网络】
+
+================================================================================
+
+
+
+Actor包含 21 个参数:
+
+  ├─ order_layer.grid_embedding.weight
+
+  │  ├─ Shape: torch.Size([143, 128])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ order_layer.contin_embedding.weight
+
+  │  ├─ Shape: torch.Size([128, 6])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ order_layer.contin_embedding.bias
+
+  │  ├─ Shape: torch.Size([128])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ order_layer.order_layer2.weight
+
+  │  ├─ Shape: torch.Size([128, 384])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ order_layer.order_layer2.bias
+
+  │  ├─ Shape: torch.Size([128])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ order_layer.order_layer3.weight
+
+  │  ├─ Shape: torch.Size([128, 128])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ order_layer.order_layer3.bias
+
+  │  ├─ Shape: torch.Size([128])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.grid_embedding.weight
+
+  │  ├─ Shape: torch.Size([143, 64])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.time_embedding.weight
+
+  │  ├─ Shape: torch.Size([144, 64])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.contin_embedding.weight
+
+  │  ├─ Shape: torch.Size([64, 22])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.contin_embedding.bias
+
+  │  ├─ Shape: torch.Size([64])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.gnn_layer.GCN1.gconv.weight
+
+  │  ├─ Shape: torch.Size([64, 192])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.gnn_layer.GCN1.gconv.bias
+
+  │  ├─ Shape: torch.Size([64])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.gnn_layer.GCN2.gconv.weight
+
+  │  ├─ Shape: torch.Size([64, 192])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.gnn_layer.GCN2.gconv.bias
+
+  │  ├─ Shape: torch.Size([64])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.gnn_layer.fc.weight
+
+  │  ├─ Shape: torch.Size([64, 64])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.gnn_layer.fc.bias
+
+  │  ├─ Shape: torch.Size([64])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.state_fc1.weight
+
+  │  ├─ Shape: torch.Size([128, 192])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.state_fc1.bias
+
+  │  ├─ Shape: torch.Size([128])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.state_fc2.weight
+
+  │  ├─ Shape: torch.Size([128, 128])
+
+  │  ├─ Dtype: torch.float32
+
+  │  └─ Device: cpu
+
+  ├─ state_layer.state_fc2.bias
+
+  │  ├─ Shape: torch.Size([128])
+
+  │  ├─ Dtype: torch.float32
+```
+
 ### 1.4 网络调用关系
 
 | 阶段 | 入口方法 | 调用网络 | 调用子网络 | 输出 |
