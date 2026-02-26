@@ -86,9 +86,11 @@ def get_parameter():
     parser = argparse.ArgumentParser()
     args= parser.parse_args()
     # ========== ！！！！！ProPS参数！！！！！ ==========
-    args.llm_enhance = True
-    args.llm_only = False
+    args.llm_enhance = True # 是否使用 LLM 优化权重
+    args.llm_only = False # 是否仅使用 LLM 优化权重（不进行MLP向量计算）
+    args.use_local_weights = False # 是否使用本地权重文件（如果 False 则调用 OpenAI API）
     args.llm_enhance_weight_path = '../z_wyc_add/llm_enhance_weight/' + time.strftime("%Y%m%d_%H-%M-%S") + '/'
+    args.llm_local_weight_path = '../z_wyc_add/llm_enhance_weight/llm_local_weights/'
     args.llm_enhance_weight_file = 'LLM_Optimized_Weights'
     
     # 匹配模式：
@@ -796,6 +798,7 @@ def log_test_info(args):
     Logger.info(f"FM Mode: {args.FM_mode}")  # 是否开启重定位
     Logger.info(f"LLM Enhance: {args.llm_enhance}")  # 是否使用LLM增强
     Logger.info(f"LLM Only: {args.llm_only}")  # 是否只使用LLM输出
+    Logger.info(f"LLM Local Weights: {args.use_local_weights}")  # 是否使用本地权重文件
     Logger.info("-" * 50)  # 分隔线
     
     # 执行模式
@@ -1050,6 +1053,12 @@ def test(env, agent , writer=None,args=None,device='cpu'):
         # LLM 增强权重加载 ==================================================
         weights_path = None
         llm_optimized_weights = None
+        # 如果使用本地权重文件，设置权重路径
+        if args.use_local_weights:
+            Logger.info("Using local weights for LLM enhancement.")
+            args.llm_enhance_weight_path = args.llm_local_weight_path
+        
+        # 加载权重
         if args.llm_enhance:
             Logger.info("LLM enhancement is enabled.")
 
@@ -1322,8 +1331,8 @@ def test(env, agent , writer=None,args=None,device='cpu'):
         agent.logs.save_log_distribution('distribution')
 
         # LLM 增强权重保存 ==================================================
-        # 维护 episode_reward_buffer（仅在 llm_enhance 为 True 时）
-        if args.llm_enhance:
+        # 维护 episode_reward_buffer（仅在 llm_enhance 为 True 且 未使用本地权重 时）
+        if args.llm_enhance and not args.use_local_weights:
             Logger.info(f"LLM enhancement LOG")
             episode_reward_buffer, best_orr_records, best_gmv_records = update_episode_reward_buffer(
                 (iteration-args.TEST_SEED), llm_optimized_weights, order_response_rates, 
