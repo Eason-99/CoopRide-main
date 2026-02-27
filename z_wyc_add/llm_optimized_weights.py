@@ -2,12 +2,17 @@ import torch
 from log import Logger
 import json
 from openai import OpenAI
+from zai import ZhipuAiClient
 
 # ==================== OpenAI API 配置 ====================
 # 默认 API 配置（可在代码中修改或通过参数传入覆盖）
 DEFAULT_OPENAI_API_KEY = "sk-yXEDn5KuOGgLa83lGEFmxWoSPkGMvtfje14fLrM228ttHX3K"  # 请替换为你的实际 API Key
-DEFAULT_OPENAI_BASE_URL = "https://api.chatanywhere.tech/v1"  # 默认使用 OpenAI 官方端点，如需自定义请设置为你的 base_url
+DEFAULT_OPENAI_BASE_URL = "https://api.chatanywhere.tech/v1"  # 国内
+# DEFAULT_OPENAI_BASE_URL = "https://api.chatanywhere.org/v1"  # 国外
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"  # 默认使用的模型
+
+DEFAULT_ZHIPU_API_KEY = "fe0b7f61295f44918c8cf557bb5ac8d1.JPzOXBpZJ1DGKUcl"
+DEFAULT_ZHIPU_MODEL = "glm-4.7"
 
 # ==================== 函数定义 ====================
 
@@ -253,13 +258,30 @@ def call_openai_for_weight_optimization(llm_optimized_weights, api_key=None, bas
         }
         
     except Exception as e:
-        Logger.warning(f"调用 OpenAI API 失败: {e}")
+        # 打印详细的错误信息
+        import traceback
+        error_type = type(e).__name__
+        error_msg = str(e)
+        full_traceback = traceback.format_exc()
+        
+        print("\n" + "=" * 70)
+        print("[ERROR] OpenAI API 调用失败详情")
+        print("=" * 70)
+        print(f"错误类型: {error_type}")
+        print(f"错误信息: {error_msg}")
+        print(f"使用的 Base URL: {final_base_url}")
+        print(f"使用的模型: {final_model}")
+        print(f"API Key 前缀: {final_api_key[:10]}..." if len(final_api_key) > 10 else "API Key: 未设置或长度不足")
+        print("\n完整堆栈跟踪:")
+        print(full_traceback)
+        print("=" * 70)
+        
+        Logger.warning(f"调用 OpenAI API 失败: {error_type} - {error_msg}")
         return {
-            'response': f"API 调用失败: {str(e)}",
+            'response': f"API 调用失败: {error_type} - {error_msg}",
             'suggested_weights': None,
-            'suggestion': "API 调用失败，无法获取建议"
+            'suggestion': f"API 调用失败 ({error_type})，无法获取建议"
         }
-
 
 def get_llm_optimized_weights():
     """
@@ -407,7 +429,7 @@ def compute_llm_correction(llm_optimized_weights, state, order, mask, device='cp
 
 
 # ==================== 测试代码 ====================
-if __name__ == "__main__":
+def test_openai():
     print("=" * 70)
     print("测试 call_openai_for_weight_optimization 函数")
     print("=" * 70)
@@ -421,8 +443,7 @@ if __name__ == "__main__":
     zero_weights = torch.zeros(10)
     
     result1 = call_openai_for_weight_optimization(
-        llm_optimized_weights=zero_weights,
-        temperature=0.7
+        llm_optimized_weights=zero_weights
     )
     
     print(f"✓ 返回类型: {type(result1)}")
@@ -451,8 +472,7 @@ if __name__ == "__main__":
     ])
     
     result2 = call_openai_for_weight_optimization(
-        llm_optimized_weights=custom_weights,
-        temperature=0.7
+        llm_optimized_weights=custom_weights
     )
     
     print(f"✓ 返回类型: {type(result2)}")
@@ -467,3 +487,59 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     print("测试完成")
     print("=" * 70)
+    
+
+import traceback
+
+def test_zhipu():
+    print("=" * 70)
+    print("[INFO] 开始测试 Zhipu API")
+    print("=" * 70)
+    
+    try:
+        # 初始化客户端
+        print("[INFO] 正在初始化 ZhipuAiClient...")
+        client = ZhipuAiClient(api_key=DEFAULT_ZHIPU_API_KEY)
+
+        # 创建聊天完成请求
+        print(f"[INFO] 正在发送请求 (模型: {DEFAULT_ZHIPU_MODEL})...")
+        response = client.chat.completions.create(
+            model=DEFAULT_ZHIPU_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是一个有用的AI助手。"
+                },
+                {
+                    "role": "user",
+                    "content": "你好，请介绍一下自己。"
+                }
+            ],
+            temperature=0.6
+        )
+
+        # 获取回复
+        print("\n[SUCCESS] 请求成功！获取到的回复如下:")
+        print("-" * 40)
+        print(response.choices[0].message.content)
+        print("-" * 40)
+
+    except Exception as e:
+        print("\n" + "=" * 70)
+        print("[ERROR] Zhipu API 调用失败详情")
+        print("=" * 70)
+        print(f"错误类型: {type(e).__name__}")
+        print(f"错误信息: {str(e)}")
+        print("\n完整堆栈跟踪:")
+        # 打印完整的调用栈，便于定位是网络层还是解析层的问题
+        traceback.print_exc()
+        
+    finally:
+        print("\n" + "=" * 70)
+        print("[INFO] 测试结束")
+        print("=" * 70)
+
+if __name__ == "__main__":
+    # test_openai()
+    test_zhipu()
+    

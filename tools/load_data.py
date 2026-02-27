@@ -4,8 +4,19 @@ import pickle
 import sys 
 sys.path.append('../')
 from simulator.envs import *
+sys.path.append('../z_wyc_add')
+from log import Logger
 
 def load_envs_DiDi121(driver_num=2000):
+    # 场景控制开关定义
+    enable_tidal = True          # 控制潮汐通勤场景
+    enable_burst = False          # 控制局部突发需求场景
+    enable_long_tail = False      # 控制长尾跨区需求场景
+    enable_supply_decay = False   # 控制全局运力衰减场景
+    Logger.info("=" * 50)  # 分隔线
+    Logger.info(f"enable_tidal: {enable_tidal}, enable_burst: {enable_burst}, enable_long_tail: {enable_long_tail}")  # 分隔线
+    Logger.info("=" * 50)  # 分隔线
+    
     data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
     primary_path = os.path.join(data_dir, "DiDi", "DiDi_day1_grid121.pkl")
     fallback_path = os.path.join(data_dir, "DiDi_day1_grid121.pkl")
@@ -16,7 +27,7 @@ def load_envs_DiDi121(driver_num=2000):
     price_param = data_param['price']   # 每级邻居的价格    第0级表示自己网格 0~l_max
     neighbor = data_param['neighbor']    # neighbor>=100 表示不可达的订单
     order_param = data_param['order']   # shape=(11,11,144)  表示 (出发地，目的地，出发时间)
-    l_max = 6   # 最大通勤跨邻居数
+    l_max = 8   # 最大通勤跨邻居数
     M,N = 11,11
     price_param[:,1]/=2     # 减小订单的方差
     np.random.seed(0)
@@ -35,7 +46,17 @@ def load_envs_DiDi121(driver_num=2000):
     # 添加与邻居相关的随机数据
     random_grid_num = np.random.randint(1,6,M*N)
     random_prob = np.zeros((M*N,M*N))
-    prob_list = [0.05,0.2,0.4,0.15,0.1,0.05,0.05]
+    
+    # ---------------------------------------------------------
+    # 场景三：长尾跨区需求场景控制逻辑 (部分1/2)
+    # 物理意义：模拟城郊长途出行需求激增对运力周转率的拉伸效应
+    # ---------------------------------------------------------
+    if enable_long_tail:
+        # 将概率权重向高层级邻接节点偏移
+        prob_list = [0.01, 0.05, 0.1, 0.2, 0.3, 0.2, 0.14]
+    else:
+        prob_list = [0.05, 0.2, 0.4, 0.15, 0.1, 0.05, 0.05]
+    
     for k in range(7):
         index= neighbor==k
         random_prob+= prob_list[k]/np.sum(index,axis=-1,keepdims=True)*index
@@ -56,10 +77,58 @@ def load_envs_DiDi121(driver_num=2000):
     commute1[commute1<0] = 0
     # 全部删除一点点
     random_delete = np.random.randint(0,5,(commute1.shape))
+    
+    # ---------------------------------------------------------
+    # 场景三：长尾跨区需求场景控制逻辑 (部分2/2)
+    # ---------------------------------------------------------
+    if enable_long_tail:
+        # 对跨度大于等于4个网格的订单实施保护机制
+        random_delete[neighbor >= 4] = 0
+    
     random_delete[random_delete<=3] = 0
     random_delete[random_delete>3] = 1
     commute1 = commute1-random_delete
     commute1[commute1<0] = 0
+    
+    # ---------------------------------------------------------
+    # 场景一：潮汐交通控制逻辑
+    # 物理映射：早晚高峰期间居住区与商业区之间的定向通勤洪峰
+    # ---------------------------------------------------------
+    if enable_tidal:
+        total_grids = M * N
+        commercial_threshold = total_grids // 3
+        
+        # 构建一维网格索引数组
+        commercial_grids = np.arange(commercial_threshold)
+        residential_grids = np.arange(commercial_threshold, total_grids)
+        
+        # 封装时间切片对象以提升代码复用性与可读性
+        morning_peak_slice = slice(42, 55)
+        evening_peak_slice = slice(102, 115)
+        
+        # 早高峰：居住区向商业区的单向流量放大
+        # 利用 reshape(-1, 1) 将源节点数组转为列向量，触发 NumPy 广播机制完成子矩阵的批量标量乘法
+        commute1[residential_grids.reshape(-1, 1), commercial_grids, morning_peak_slice] *= 30.0
+            
+        # 晚高峰：商业区向居住区的单向流量放大
+        commute1[commercial_grids.reshape(-1, 1), residential_grids, evening_peak_slice] *= 30.0
+
+    # ---------------------------------------------------------
+    # 场景二：局部突发需求控制逻辑
+    # 物理映射：大型集会散场引发的瞬时高并发跨区出行需求
+    # ---------------------------------------------------------
+    if enable_burst:
+        event_grid_1, event_grid_2 = 45, 88
+        burst_slice = slice(50, 65)
+        
+        # 提取合法的目的地掩码：距离在 1 到 l_max 之间（排除自身和不可达网格）
+        valid_dest_1 = (neighbor[event_grid_1] > 0) & (neighbor[event_grid_1] <= l_max)
+        valid_dest_2 = (neighbor[event_grid_2] > 0) & (neighbor[event_grid_2] <= l_max)
+        
+        # 仅对合法范围内的目的地注入瞬时脉冲流量
+        commute1[event_grid_1, valid_dest_1, burst_slice] += 100
+        commute1[event_grid_2, valid_dest_2, burst_slice] += 100
+    
     order_param = commute1.astype(np.int32)
     # 初始化司机数量
     driver_param=np.zeros(M*N,dtype=np.int32)+1
@@ -84,6 +153,7 @@ def load_envs_DiDi121(driver_num=2000):
         if v>0:
             large_grid.append(k)
     print('订单数量: {} , 司机数量: {}'.format( np.sum(order_num), np.sum(driver_param)))
+    Logger.info(f"订单数量: {np.sum(order_num)}, 司机数量: {np.sum(driver_param)}")
 
     # 处理为envs的参数
     mapped_matrix_int = np.arange(M*N)
@@ -128,6 +198,15 @@ def load_envs_NYU143(driver_num=2000):
         None: 保留字段（未使用）
         M*N: 网格总数
     """
+    # 场景控制开关定义
+    enable_tidal = True          # 控制潮汐通勤场景
+    enable_burst = False          # 控制局部突发需求场景
+    enable_long_tail = False      # 控制长尾跨区需求场景
+    enable_supply_decay = False   # 控制全局运力衰减场景
+    Logger.info("=" * 50)  # 分隔线
+    Logger.info(f"enable_tidal: {enable_tidal}, enable_burst: {enable_burst}, enable_long_tail: {enable_long_tail}")  # 分隔线
+    Logger.info("=" * 50)  # 分隔线
+    
     data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
     primary_path = os.path.join(data_dir, "NYU", "NYU_grid143.pkl")
     fallback_path = os.path.join(data_dir, "NYU_grid143.pkl")
@@ -175,7 +254,17 @@ def load_envs_NYU143(driver_num=2000):
     
     # 构建基于邻居距离的概率分布矩阵
     random_prob = np.zeros((M*N,M*N))
-    prob_list = [0.05,0.2,0.4,0.15,0.1,0.05,0.05]  # 不同邻居级别的权重（0-6级）
+    
+    # ---------------------------------------------------------
+    # 场景三：长尾跨区需求场景控制逻辑 (部分1/2)
+    # 物理意义：模拟城郊长途出行需求激增对运力周转率的拉伸效应
+    # ---------------------------------------------------------
+    if enable_long_tail:
+        # 将概率权重向高层级邻接节点偏移
+        prob_list = [0.01, 0.05, 0.1, 0.2, 0.3, 0.2, 0.14]
+    else:
+        prob_list = [0.05, 0.2, 0.4, 0.15, 0.1, 0.05, 0.05]
+    
     for k in range(7):
         index= neighbor==k
         # 将权重归一化后分配给对应邻居级别的网格
@@ -202,11 +291,56 @@ def load_envs_NYU143(driver_num=2000):
     
     # ========== 步骤4：全局少量删除订单（约20%概率）==========
     random_delete = np.random.randint(0,5,(commute1.shape))
+    # ---------------------------------------------------------
+    # 场景三：长尾跨区需求场景控制逻辑 (部分2/2)
+    # ---------------------------------------------------------
+    if enable_long_tail:
+        # 对跨度大于等于4个网格的订单实施保护机制
+        random_delete[neighbor >= 4] = 0
     random_delete[random_delete<=3] = 0   # 0-3不删除
     random_delete[random_delete>3] = 1    # 4才删除，即约20%删除率
     commute1 = commute1-random_delete
     commute1[commute1<0] = 0
-    
+
+    # ---------------------------------------------------------
+    # 场景一：潮汐交通控制逻辑
+    # 物理映射：早晚高峰期间居住区与商业区之间的定向通勤洪峰
+    # ---------------------------------------------------------
+    if enable_tidal:
+        total_grids = M * N
+        commercial_threshold = total_grids // 3
+        
+        # 构建一维网格索引数组
+        commercial_grids = np.arange(commercial_threshold)
+        residential_grids = np.arange(commercial_threshold, total_grids)
+        
+        # 封装时间切片对象以提升代码复用性与可读性
+        morning_peak_slice = slice(42, 55)
+        evening_peak_slice = slice(102, 115)
+        
+        # 早高峰：居住区向商业区的单向流量放大
+        # 利用 reshape(-1, 1) 将源节点数组转为列向量，触发 NumPy 广播机制完成子矩阵的批量标量乘法
+        commute1[residential_grids.reshape(-1, 1), commercial_grids, morning_peak_slice] *= 30.0
+            
+        # 晚高峰：商业区向居住区的单向流量放大
+        commute1[commercial_grids.reshape(-1, 1), residential_grids, evening_peak_slice] *= 30.0
+
+    # ---------------------------------------------------------
+    # 场景二：局部突发需求控制逻辑
+    # 物理映射：大型集会散场引发的瞬时高并发跨区出行需求
+    # ---------------------------------------------------------
+    if enable_burst:
+        event_grid_1, event_grid_2 = 45, 88
+        burst_slice = slice(50, 65)
+        
+        # 提取合法的目的地掩码：距离在 1 到 l_max 之间（排除自身和不可达网格）
+        valid_dest_1 = (neighbor[event_grid_1] > 0) & (neighbor[event_grid_1] <= l_max)
+        valid_dest_2 = (neighbor[event_grid_2] > 0) & (neighbor[event_grid_2] <= l_max)
+        
+        # 仅对合法范围内的目的地注入瞬时脉冲流量
+        commute1[event_grid_1, valid_dest_1, burst_slice] += 100
+        commute1[event_grid_2, valid_dest_2, burst_slice] += 100
+
     # 转换回整数类型
     order_param = commute1.astype(np.int32)
     # ========== 步骤5：初始化司机数量 ==========
@@ -237,6 +371,7 @@ def load_envs_NYU143(driver_num=2000):
             large_grid.append(k)
     order_num = order_param.sum()
     print('订单数量: {} , 司机数量: {}'.format( np.sum(order_num), np.sum(driver_param)))
+    Logger.info(f"订单数量: {np.sum(order_num)}, 司机数量: {np.sum(driver_param)}")
 
     # ========== 步骤7：转换为环境所需参数格式 ==========
     

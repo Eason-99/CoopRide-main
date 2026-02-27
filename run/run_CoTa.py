@@ -87,7 +87,7 @@ def get_parameter():
     args= parser.parse_args()
     # ========== ！！！！！ProPS参数！！！！！ ==========
     args.llm_enhance = True # 是否使用 LLM 优化权重
-    args.llm_only = False # 是否仅使用 LLM 优化权重（不进行MLP向量计算）
+    args.llm_only = True # 是否仅使用 LLM 优化权重（不进行MLP向量计算）
     args.use_local_weights = False # 是否使用本地权重文件（如果 False 则调用 OpenAI API）
     args.llm_enhance_weight_path = '../z_wyc_add/llm_enhance_weight/' + time.strftime("%Y%m%d_%H-%M-%S") + '/'
     args.llm_local_weight_path = '../z_wyc_add/llm_enhance_weight/llm_local_weights/'
@@ -106,8 +106,8 @@ def get_parameter():
     # ========== 测试相关参数 ==========
     # 测试基准目录路径（公共前缀）
     # test_base_dir = '../logs/synthetic/grid143/EnvStat326_OD143_FMRLmerge_Batch1000_Gamma0.97_Lambda0.95_Iter1_Ir0.001_Step144_Ent0.005_Minibatch5_Parallel5mix_MDP0_StateEmb2_Meta0global_DGCNAC_relufeaNor1_20260103_02-57'
-    test_base_dir = '../z_wyc_add/ckpts/test143'
-    # test_base_dir = '../z_wyc_add/ckpts/test121'
+    # test_base_dir = '../z_wyc_add/ckpts/test143'
+    test_base_dir = '../z_wyc_add/ckpts/test121'
     
     # 测试日志目录（仅用于查看）
     args.test_dir = test_base_dir
@@ -120,7 +120,7 @@ def get_parameter():
     args.test = True
     
     # 测试迭代次数
-    args.TEST_ITER=10
+    args.TEST_ITER=50
     
     # 测试随机种子（保证测试可重复）
     args.TEST_SEED = 1314520
@@ -156,7 +156,7 @@ def get_parameter():
     
     # 网格数量（决定了使用哪个数据集）
     # 可选值：36, 100, 121, 143
-    args.grid_num= 143
+    args.grid_num= 121
     # 司机数量字典：不同网格规模对应不同的司机数量
     driver_dict = {
         143:2000,  # NYU143 数据集
@@ -579,7 +579,7 @@ def get_parameter():
     print ("log dir is {}".format(log_dir))
     
     # ========== 保存配置参数 ==========
-    args.writer_logs=True
+    args.writer_logs=False
     if args.writer_logs:
         # 将所有参数保存到 setting.txt 文件
         args_dict=args.__dict__
