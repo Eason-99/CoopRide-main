@@ -106,8 +106,8 @@ def get_parameter():
     # ========== 测试相关参数 ==========
     # 测试基准目录路径（公共前缀）
     # test_base_dir = '../logs/synthetic/grid143/EnvStat326_OD143_FMRLmerge_Batch1000_Gamma0.97_Lambda0.95_Iter1_Ir0.001_Step144_Ent0.005_Minibatch5_Parallel5mix_MDP0_StateEmb2_Meta0global_DGCNAC_relufeaNor1_20260103_02-57'
-    # test_base_dir = '../z_wyc_add/ckpts/test143'
-    test_base_dir = '../z_wyc_add/ckpts/test121'
+    test_base_dir = '../z_wyc_add/ckpts/test143'
+    # test_base_dir = '../z_wyc_add/ckpts/test121'
     
     # 测试日志目录（仅用于查看）
     args.test_dir = test_base_dir
@@ -156,7 +156,7 @@ def get_parameter():
     
     # 网格数量（决定了使用哪个数据集）
     # 可选值：36, 100, 121, 143
-    args.grid_num= 121
+    args.grid_num= 143
     # 司机数量字典：不同网格规模对应不同的司机数量
     driver_dict = {
         143:2000,  # NYU143 数据集

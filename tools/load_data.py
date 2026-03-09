@@ -199,8 +199,8 @@ def load_envs_NYU143(driver_num=2000):
         M*N: 网格总数
     """
     # 场景控制开关定义
-    enable_tidal = True          # 控制潮汐通勤场景
-    enable_burst = False          # 控制局部突发需求场景
+    enable_tidal = False          # 控制潮汐通勤场景
+    enable_burst = True          # 控制局部突发需求场景
     enable_long_tail = False      # 控制长尾跨区需求场景
     enable_supply_decay = False   # 控制全局运力衰减场景
     Logger.info("=" * 50)  # 分隔线

@@ -21,7 +21,7 @@ def get_env_description():
     获取环境描述字符串 (针对 LLM 逻辑推理优化的版本)
     """
     description = (
-        "The environment is a high-fidelity, multi-agent ride-hailing simulator (CoopRide). "
+        "The environment is a high-fidelity, multi-agent ride-hailing simulator. "
         "The goal is to find an optimal dispatch policy by weighting 10 features to maximize "
         "long-term system efficiency, order response rates (ORR), and total revenue (GMV).\n"
         "### Core Optimization Logic:\n"
@@ -85,7 +85,7 @@ def build_weight_optimization_prompt(weights_list, env_description=None, max_ste
     # Format episode reward buffer if provided
     buffer_string = format_history_for_llm(episode_reward_topK)
     
-    prompt = f"""You are a global RL policy optimizer, helping me find the global optimal policy for a ride-hailing dispatch system.
+    prompt = f"""You are a global policy optimizer, helping me find the global optimal policy for a ride-hailing dispatch system.
 
 # Environment:
 {env_description if env_description else "Ride-hailing dispatch optimization using 10 feature weights."}
